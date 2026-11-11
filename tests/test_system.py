@@ -80,6 +80,24 @@ class SystemTest(unittest.TestCase):
         self.assertEqual([(e["time"], e["install"], e["upgrade"], e["remove"]) for e in entries],
                          [("2026-11-12 00:09:00", 0, 1, 1), ("2026-11-12 00:08:31", 2, 0, 0)])
 
+    def test_xkb_options(self):
+        text = ("! layout\n  us  English (US)\n\n! option\n  grp  Switching to another layout\n  grp:switch  Right Alt (while pressed)\n"
+                "  empty  A group without options\n  caps  Caps Lock behavior\n  caps:escape  Make Caps Lock an additional Esc\n")
+        self.assertEqual(system.parse_xkb_options(text), [
+            ("Switching to another layout", [("grp:switch", "Right Alt (while pressed)")]),
+            ("Caps Lock behavior", [("caps:escape", "Make Caps Lock an additional Esc")])])
+        self.assertEqual(system.parse_xkb_options("! layout\n  us  English\n"), [])
+
+    def test_deb822_sources(self):
+        text = "Types: deb\nURIs: http://a/ubuntu/\nSuites: x x-updates\n\nTypes: deb\nURIs: http://b/\nSuites: y\nEnabled: no\n"
+        self.assertEqual(system.parse_deb822(text), [{"uri": "http://a/ubuntu/", "suites": "x x-updates", "enabled": True},
+                                                      {"uri": "http://b/", "suites": "y", "enabled": False}])
+
+    def test_sources_list(self):
+        text = "# comment\ndeb [arch=amd64 signed-by=/k.gpg] https://repo/ stable main\n# deb http://old/ focal main\n"
+        self.assertEqual(system.parse_sources_list(text), [{"uri": "https://repo/", "suites": "stable", "enabled": True},
+                                                            {"uri": "http://old/", "suites": "focal", "enabled": False}])
+
     def test_missing_command(self):
         self.assertEqual(system.run(["tuneup-no-such-command"]), (-1, ""))
 

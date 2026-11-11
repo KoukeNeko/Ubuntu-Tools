@@ -284,3 +284,93 @@ def apt_history(limit=15):
 
 def held():
     return run(["apt-mark", "showhold"])[1].split()
+
+
+# ---------- 鍵盤配置選項 ----------
+XKB_RULES = Path("/usr/share/X11/xkb/rules/evdev.lst")
+
+
+def parse_xkb_options(text):
+    """evdev.lst 的「! option」區段 -> [(群組說明, [(選項, 說明)])]"""
+    groups = []
+    section = text.split("! option", 1)[1] if "! option" in text else ""
+    for line in section.splitlines():
+        if line.startswith("!"):
+            break
+        name, _sep, desc = line.strip().partition(" ")
+        if not name:
+            continue
+        if ":" in name:
+            if groups:
+                groups[-1][1].append((name, desc.strip()))
+        else:
+            groups.append((desc.strip(), []))
+    return [g for g in groups if g[1]]
+
+
+def xkb_options():
+    try:
+        return parse_xkb_options(XKB_RULES.read_text(errors="replace"))
+    except OSError:
+        return []
+
+
+# ---------- 軟體來源 ----------
+APT_SOURCES = [Path("/etc/apt/sources.list"), Path("/etc/apt/sources.list.d")]
+
+
+def parse_deb822(text):
+    """.sources 檔 -> [{"uri", "suites", "enabled"}]"""
+    sources = []
+    for stanza in re.split(r"\n\s*\n", text):
+        fields = {k.lower(): v.strip() for k, v in re.findall(r"^([A-Za-z-]+):\s*(.*)$", stanza, re.M)}
+        if fields.get("uris"):
+            sources.append({"uri": fields["uris"], "suites": fields.get("suites", ""), "enabled": fields.get("enabled", "yes").lower() != "no"})
+    return sources
+
+
+def parse_sources_list(text):
+    """傳統的 .list 檔 -> [{"uri", "suites", "enabled"}]；被註解掉的 deb 行視為停用"""
+    sources = []
+    for line in text.splitlines():
+        m = re.match(r"^\s*(#\s*)?deb(?:-src)?\s+(?:\[[^\]]*\]\s+)?(\S+)\s+(\S+)", line)
+        if m:
+            sources.append({"uri": m.group(2), "suites": m.group(3), "enabled": not m.group(1)})
+    return sources
+
+
+def apt_sources():
+    files = [APT_SOURCES[0]] + (sorted(APT_SOURCES[1].iterdir()) if APT_SOURCES[1].is_dir() else [])
+    found = []
+    for path in files:
+        if path.suffix not in (".sources", ".list"):
+            continue
+        try:
+            text = path.read_text(errors="replace")
+        except OSError:
+            continue
+        for src in (parse_deb822 if path.suffix == ".sources" else parse_sources_list)(text):
+            found.append(dict(src, file=path.name))
+    return found
+
+
+# ---------- 闔上螢幕時不暫停 ----------
+# 做法與 GNOME Tweaks 相同：登入時啟動一個持有 handle-lid-switch 抑制鎖的程序。
+LID_AUTOSTART = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "autostart" / "tuneup-ignore-lid.desktop"
+LID_COMMAND = ["systemd-inhibit", "--what=handle-lid-switch", "--who=Tuneup", "--why=lid", "sleep", "infinity"]
+
+
+def lid_ignored():
+    return LID_AUTOSTART.exists()
+
+
+def set_lid_ignored(on):
+    """立即生效，並在之後每次登入時維持。"""
+    subprocess.run(["pkill", "-f", "systemd-inhibit --what=handle-lid-switch --who=Tuneup"], check=False)
+    if on:
+        LID_AUTOSTART.parent.mkdir(parents=True, exist_ok=True)
+        LID_AUTOSTART.write_text("[Desktop Entry]\nType=Application\nName=Tuneup: ignore lid close\n"
+                                 f"Exec={' '.join(LID_COMMAND)}\nNoDisplay=true\nX-GNOME-Autostart-enabled=true\n")
+        subprocess.Popen(LID_COMMAND, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    else:
+        LID_AUTOSTART.unlink(missing_ok=True)
