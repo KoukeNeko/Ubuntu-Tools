@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tuneup — GTK4 + libadwaita UI 原型（資料皆為示範，不會修改系統）。
+"""Tuneup — GTK4 + libadwaita （唯讀：顯示系統的真實狀態，這一版不會寫入任何設定）。
 用法:  python3 tuneup.py            開啟視窗
        python3 tuneup.py --shot DIR  將每個頁面截圖存到 DIR 後離開
        python3 tuneup.py --lang en   這次以指定語言開啟（system / zh_TW / en）
@@ -16,6 +16,9 @@ from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
 # 新增語言：複製 i18n/en.json 改檔名與內容，再在 LANGS 加一列即可。
 import json
 import os
+import subprocess
+import threading
+import urllib.request
 from pathlib import Path
 
 I18N_DIR = Path(__file__).resolve().parent / "i18n"
@@ -88,133 +91,221 @@ row.two-line box.header{min-height:64px}
 .diff{font-family:monospace;font-size:small;padding:12px}
 .navigation-sidebar row.sep{background:none;min-height:0;padding:0}
 .swatch{min-width:24px;min-height:24px;border-radius:99px;padding:0;border:2px solid transparent}
-.swatch.on{border-color:@window_fg_color}
+.swatch:checked{border-color:@window_fg_color}
 """
 
-EXT = [  # name, author, ver, desc, enabled, state
-    ("Blur my Shell", "aunetx", "v66", "為面板、Dock、概覽加入模糊背景", True, "upd"),
-    ("Dash to Dock", "micxgx", "v95", "把 Dock 固定在螢幕邊緣，可自訂大小與行為", True, "err"),
-    ("Vitals", "corecoding", "v68", "在頂部列顯示 CPU、記憶體、溫度與網速", True, ""),
-    ("Caffeine", "eonpatapon", "v54", "一鍵暫停螢幕自動鎖定與休眠", False, "upd"),
-    ("Clipboard Indicator", "Tudmotu", "v67", "剪貼簿歷史，面板內快速貼上", True, ""),
-    ("AppIndicator Support", "ubuntu", "v59", "顯示系統匣圖示（Dropbox、Discord…）", True, ""),
-    ("GSConnect", "dlandau", "v58", "與 Android 手機互通：通知、檔案、剪貼簿", False, ""),
-    ("Just Perfection", "jrahmatzadeh", "v32", "細部隱藏與調整 GNOME Shell 介面元素", True, ""),
-]
-DISC = [
-    ("Space Bar", "★ 4.7 · 182k", "在面板顯示工作區，像 i3 一樣切換"),
-    ("Tiling Shell", "★ 4.8 · 96k", "進階視窗貼齊與分割區域"),
-    ("Search Light", "★ 4.6 · 41k", "把搜尋做成 Spotlight 風格"),
-    ("Quick Settings Tweaker", "★ 4.5 · 73k", "自訂快速設定面板項目與順序"),
-    ("Rounded Window Corners", "★ 4.7 · 118k", "為所有視窗套上圓角"),
-    ("Desktop Cube", "★ 4.4 · 38k", "工作區切換使用立方體特效"),
-]
-# 調校：分類 -> 群組 -> 設定 (類型, 標題, gsettings 鍵, 選項/範圍, 預設值)
+# ---------- 真實資料來源（這一版只讀取，不寫入系統） ----------
+READ_ONLY_MSG = "唯讀模式：這一版還不會寫入系統"
+SHELL_BUS = ("org.gnome.Shell.Extensions", "/org/gnome/Shell/Extensions")
+EXT_STATE_ACTIVE, EXT_STATE_ERROR, EXT_STATE_OUT_OF_DATE = 1, 3, 4  # 取自 GNOME Shell 的 ExtensionState
+
+
+def shell_call(method, args=None, iface=SHELL_BUS[0]):
+    bus = Gio.bus_get_sync(Gio.BusType.SESSION)
+    return bus.call_sync(SHELL_BUS[0], SHELL_BUS[1], iface, method, args, None, Gio.DBusCallFlags.NONE, 3000, None).unpack()
+
+
+def load_shell_version():
+    try:
+        v = shell_call("Get", GLib.Variant("(ss)", (SHELL_BUS[0], "ShellVersion")), "org.freedesktop.DBus.Properties")[0]
+        return v.split(".")[0]
+    except GLib.Error:
+        return ""
+
+
+def load_extensions():
+    """回傳 (擴充功能清單, 錯誤訊息)。GNOME Shell 沒有回應時清單為空。"""
+    try:
+        raw = shell_call("ListExtensions")[0]
+    except GLib.Error as e:
+        return [], e.message
+    exts = []
+    for uuid, d in raw.items():
+        ver = d.get("version-name") or d.get("version")
+        if isinstance(ver, float):
+            ver = int(ver)
+        desc = (d.get("description") or "").strip()
+        exts.append({
+            "uuid": uuid, "name": d.get("name") or uuid, "desc": desc.split("\n")[0], "full_desc": desc,
+            "version": f"v{ver}" if ver else "", "state": int(d.get("state", 0)), "error": d.get("error", ""),
+            "has_update": bool(d.get("hasUpdate")), "has_prefs": bool(d.get("hasPrefs")), "url": d.get("url", ""),
+            "shell": d.get("shell-version", []), "system": d.get("type") == 1, "path": d.get("path", ""),
+        })
+    exts.sort(key=lambda e: e["name"].lower())
+    return exts, None
+
+
+def load_system():
+    name = "Linux"
+    try:
+        for line in Path("/etc/os-release").read_text().splitlines():
+            if line.startswith("PRETTY_NAME="):
+                name = line.split("=", 1)[1].strip('"')
+    except OSError:
+        pass
+    shell = load_shell_version()
+    session = {"wayland": "Wayland", "x11": "X11"}.get(os.environ.get("XDG_SESSION_TYPE", ""), "")
+    parts = [f"GNOME {shell}" if shell else "", session, f"Kernel {os.uname().release}"]
+    return name, " · ".join(p for p in parts if p), shell
+
+
+def fetch_popular(shell_major, done):
+    """背景向 extensions.gnome.org 取熱門清單，完成後在主執行緒呼叫 done(items, error)。"""
+    def work():
+        url = f"https://extensions.gnome.org/extension-query/?sort=popularity&shell_version={shell_major}&page=1"
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Tuneup"})
+            with urllib.request.urlopen(req, timeout=8) as r:
+                items, err = json.load(r).get("extensions", [])[:12], None
+        except (OSError, ValueError) as e:
+            items, err = [], str(e)
+        GLib.idle_add(lambda: done(items, err) and False)
+    threading.Thread(target=work, daemon=True).start()
+
+
+def themes_with(marker):
+    """已安裝的圖示／游標主題：marker 是主題資料夾內必須存在的項目。"""
+    names = set()
+    for base in ("/usr/share/icons", os.path.expanduser("~/.local/share/icons"), os.path.expanduser("~/.icons")):
+        try:
+            for d in os.scandir(base):
+                if d.is_dir() and os.path.exists(os.path.join(d.path, marker)) and d.name != "default":
+                    names.add(d.name)
+        except OSError:
+            pass
+    return [(n, n) for n in sorted(names, key=str.lower)]
+
+
+def icon_themes():
+    return [(n, v) for n, v in themes_with("index.theme") if not os.path.isdir(f"/usr/share/icons/{n}/cursors") or os.path.isdir(f"/usr/share/icons/{n}/scalable") or os.path.isdir(f"/usr/share/icons/{n}/16x16")]
+
+
+def cursor_themes():
+    return themes_with("cursors")
+
+
+def buttons_on_left(layout):
+    return 0 if "close" in layout.split(":")[0] else 1
+
+
+def caps_remap(options):
+    if "caps:ctrl_modifier" in options or "ctrl:nocaps" in options:
+        return 1
+    return 2 if "caps:escape" in options else 0
+
+
+ACCENTS = {"blue": "#3584e4", "teal": "#2190a4", "green": "#3a944a", "yellow": "#c88800", "orange": "#ed5b00",
+           "red": "#e62d42", "pink": "#d56199", "purple": "#9141ac", "slate": "#6f8396", "brown": "#986a44"}
+IF, WM, MUTTER = "org.gnome.desktop.interface", "org.gnome.desktop.wm.preferences", "org.gnome.mutter"
+DOCK, TOUCHPAD, KEYBOARD = "org.gnome.shell.extensions.dash-to-dock", "org.gnome.desktop.peripherals.touchpad", "org.gnome.desktop.peripherals.keyboard"
+POWER = "org.gnome.settings-daemon.plugins.power"
+
+# 調校：分類 -> 群組 -> (類型, 標題, schema, key, 額外參數)
+#   switch: 額外參數可給 reader(value)->bool　enum: [(標籤, 值)] 或回傳它的函式
+#   choice: ([標籤], reader(value)->索引)　spin: (最小, 最大, 步進)　accent / info: None
+# 系統上不存在的 schema 或 key 會自動略過。
 TWEAKS = [
     ("外觀", "applications-graphics-symbolic", [
         ("主題", [
-            ("combo", "色彩模式", "org.gnome.desktop.interface color-scheme", ["淺色", "深色", "自動"], 1),
-            ("color", "強調色", "accent-color", COLORS[:6], 0),
-            ("combo", "圖示主題", "icon-theme", ["Yaru", "Papirus", "Adwaita"], 1),
-            ("combo", "游標主題", "cursor-theme", ["Yaru", "Bibata", "DMZ"], 0),
+            ("enum", "色彩模式", IF, "color-scheme", [("預設", "default"), ("深色", "prefer-dark"), ("淺色", "prefer-light")]),
+            ("accent", "強調色", IF, "accent-color", None),
+            ("enum", "圖示主題", IF, "icon-theme", icon_themes),
+            ("enum", "游標主題", IF, "cursor-theme", cursor_themes),
         ]),
         ("字體", [
-            ("combo", "介面字體", "font-name", ["Ubuntu Sans 11", "Noto Sans CJK TC 11", "Inter 11"], 0),
-            ("combo", "等寬字體", "monospace-font-name", ["Ubuntu Mono 13", "JetBrains Mono 12"], 1),
-            ("spin", "字體縮放", "text-scaling-factor", (0.8, 1.6, 0.05), 1.15),
+            ("info", "介面字體", IF, "font-name", None),
+            ("info", "等寬字體", IF, "monospace-font-name", None),
+            ("spin", "字體縮放", IF, "text-scaling-factor", (0.5, 3.0, 0.05)),
         ]),
     ]),
     ("視窗", "view-restore-symbolic", [
         ("標題列", [
-            ("combo", "視窗按鈕位置", "button-layout", ["左", "右"], 0),
-            ("combo", "雙擊標題列", "action-double-click-titlebar", ["最大化", "最小化", "無動作"], 0),
+            ("choice", "視窗按鈕位置", WM, "button-layout", (["左", "右"], buttons_on_left)),
+            ("enum", "雙擊標題列", WM, "action-double-click-titlebar", [("最大化", "toggle-maximize"), ("最小化", "minimize"), ("無動作", "none")]),
         ]),
         ("行為", [
-            ("combo", "焦點模式", "focus-mode", ["點擊", "滑鼠移過"], 0),
-            ("switch", "邊緣貼齊", "edge-tiling", None, True),
-            ("switch", "對話框附著於父視窗", "attach-modal-dialogs", None, True),
+            ("enum", "焦點模式", WM, "focus-mode", [("點擊", "click"), ("滑鼠移過", "sloppy")]),
+            ("switch", "邊緣貼齊", MUTTER, "edge-tiling", None),
+            ("switch", "對話框附著於父視窗", MUTTER, "attach-modal-dialogs", None),
         ]),
     ]),
     ("頂部列與 Dock", "view-grid-symbolic", [
         ("頂部列", [
-            ("switch", "時鐘顯示秒數", "clock-show-seconds", None, False),
-            ("switch", "顯示星期", "clock-show-weekday", None, True),
-            ("switch", "顯示電量百分比", "show-battery-percentage", None, True),
+            ("switch", "時鐘顯示秒數", IF, "clock-show-seconds", None),
+            ("switch", "顯示星期", IF, "clock-show-weekday", None),
+            ("switch", "顯示電量百分比", IF, "show-battery-percentage", None),
         ]),
         ("Dock", [
-            ("combo", "位置", "dock-position", ["左", "下", "右"], 0),
-            ("spin", "圖示大小", "dash-max-icon-size", (24, 64, 2), 44),
-            ("switch", "永遠顯示", "dock-fixed", None, True),
+            ("enum", "位置", DOCK, "dock-position", [("左", "LEFT"), ("下", "BOTTOM"), ("右", "RIGHT")]),
+            ("spin", "圖示大小", DOCK, "dash-max-icon-size", (16, 64, 2)),
+            ("switch", "永遠顯示", DOCK, "dock-fixed", None),
         ]),
     ]),
     ("鍵盤與滑鼠", "input-keyboard-symbolic", [
         ("觸控板", [
-            ("switch", "自然捲動", "natural-scroll", None, True),
-            ("switch", "輕觸點擊", "tap-to-click", None, True),
+            ("switch", "自然捲動", TOUCHPAD, "natural-scroll", None),
+            ("switch", "輕觸點擊", TOUCHPAD, "tap-to-click", None),
+            ("spin", "指標速度", TOUCHPAD, "speed", (-1.0, 1.0, 0.1)),
         ]),
         ("鍵盤", [
-            ("combo", "Caps Lock 改為", "caps-remap", ["Caps Lock", "Ctrl", "Esc"], 1),
-            ("spin", "按鍵重複速度", "repeat-interval", (10, 80, 1), 30),
+            ("choice", "Caps Lock 改為", "org.gnome.desktop.input-sources", "xkb-options", (["Caps Lock", "Ctrl", "Esc"], caps_remap)),
+            ("spin", "按鍵重複速度", KEYBOARD, "repeat-interval", (10, 100, 1)),
         ]),
     ]),
     ("電源", "battery-symbolic", [
         ("電源", [
-            ("combo", "電源模式", "power-profile", ["省電", "平衡", "效能"], 1),
-            ("combo", "螢幕關閉時間", "idle-delay", ["1 分鐘", "5 分鐘", "10 分鐘", "永不"], 1),
-            ("combo", "闔上螢幕時", "lid-close", ["休眠", "關閉螢幕", "不執行動作"], 1),
+            ("enum", "螢幕關閉時間", "org.gnome.desktop.session", "idle-delay", [("1 分鐘", 60), ("5 分鐘", 300), ("10 分鐘", 600), ("永不", 0)]),
+            ("enum", "接上電源閒置時", POWER, "sleep-inactive-ac-type", [("休眠", "suspend"), ("不執行動作", "nothing")]),
+            ("enum", "電源鍵", POWER, "power-button-action", [("休眠", "suspend"), ("詢問", "interactive"), ("不執行動作", "nothing")]),
         ]),
     ]),
     ("隱私", "preferences-system-privacy-symbolic", [
         ("隱私", [
-            ("switch", "記錄最近開啟的檔案", "remember-recent-files", None, True),
-            ("switch", "傳送診斷資料給 Canonical", "report-technical-problems", None, False),
-            ("switch", "定位服務", "location-enabled", None, False),
+            ("switch", "記錄最近開啟的檔案", "org.gnome.desktop.privacy", "remember-recent-files", None),
+            ("switch", "傳送診斷資料給 Canonical", "org.gnome.desktop.privacy", "report-technical-problems", None),
+            ("switch", "定位服務", "org.gnome.system.location", "enabled", None),
         ]),
     ]),
 ]
-PROFILES = [
-    ("工作模式", "專注、低干擾　深色 · Dock 在左 · 12 個擴充", True),
-    ("遊戲", "效能優先　關閉動畫 · 6 個擴充 · Dock 隱藏", False),
-    ("極簡", "接近原版 GNOME　淺色 · 5 個擴充", False),
-    ("Mac 風格", "模糊、圓角、底部 Dock　Blur my Shell · McMojave 圖示", False),
-]
-HISTORY = [
-    ("啟用 Vitals", "擴充功能 · 今天 10:41", "- vitals@CoreCoding.com: disabled\n+ vitals@CoreCoding.com: enabled"),
-    ("視窗按鈕位置", "系統調校 · 今天 09:58", "- button-layout: 'appmenu:minimize,maximize,close'\n+ button-layout: 'close,minimize,maximize:appmenu'"),
-    ("套用設定檔「工作模式」", "設定檔 · 今天 09:12", "+ 12 個擴充功能已啟用\n- 5 個擴充功能已停用\n+ color-scheme: prefer-dark\n+ dock-position: left"),
-    ("解除安裝 Dash to Panel", "擴充功能 · 昨天 21:30", "- dash-to-panel@jderose9.github.com (v68)"),
-    ("字體縮放", "系統調校 · 昨天 21:04", "- text-scaling-factor: 1.0\n+ text-scaling-factor: 1.15"),
+QUICK = [
+    ("switch", "深色模式", IF, "color-scheme", lambda v: v == "prefer-dark"),
+    ("switch", "夜間護眼", "org.gnome.settings-daemon.plugins.color", "night-light-enabled", None),
+    ("switch", "動畫效果", IF, "enable-animations", None),
 ]
 MODULES = [
     ("擴充功能管理", "E", True, "安裝、啟用、更新、設定 GNOME 擴充功能"),
     ("系統調校", "T", True, "gsettings / dconf 的視覺化介面"),
-    ("設定檔與快照", "P", True, "打包、分享、還原整套設定"),
+    ("設定檔與快照", "P", False, "打包、分享、還原整套設定"),
     ("應用程式", "A", False, "統一管理 apt、Snap、Flatpak，附來源與大小"),
     ("啟動項目", "S", False, "登入時自動啟動的程式與 systemd 使用者服務"),
     ("系統清理", "C", False, "舊核心、快取、孤立套件與日誌，先預覽再清"),
     ("驅動與硬體", "D", False, "顯卡驅動切換、韌體更新、電池健康"),
     ("外掛 SDK", "+", False, "讓社群以 Python / JS 寫自己的模組並分享"),
 ]
-SIDEBAR = [  # id, 標題, 圖示, 徽章；None = 分隔線（同 Settings 的分組）
-    ("dash", "總覽", "go-home-symbolic", None),
-    ("ext", "擴充功能", "application-x-addon-symbolic", "3"),
+SIDEBAR = [  # id, 標題, 圖示；None = 分隔線（同 Settings 的分組）
+    ("dash", "總覽", "go-home-symbolic"),
+    ("ext", "擴充功能", "application-x-addon-symbolic"),
     None,
-    ("tw0", "外觀", "applications-graphics-symbolic", None),
-    ("tw1", "視窗", "view-restore-symbolic", None),
-    ("tw2", "頂部列與 Dock", "view-grid-symbolic", None),
-    ("tw3", "鍵盤與滑鼠", "input-keyboard-symbolic", None),
-    ("tw4", "電源", "battery-symbolic", None),
-    ("tw5", "隱私", "preferences-system-privacy-symbolic", None),
+    ("tw0", "外觀", "applications-graphics-symbolic"),
+    ("tw1", "視窗", "view-restore-symbolic"),
+    ("tw2", "頂部列與 Dock", "view-grid-symbolic"),
+    ("tw3", "鍵盤與滑鼠", "input-keyboard-symbolic"),
+    ("tw4", "電源", "battery-symbolic"),
+    ("tw5", "隱私", "preferences-system-privacy-symbolic"),
     None,
-    ("pf", "設定檔", "emblem-favorite-symbolic", None),
-    ("hist", "快照與歷史", "document-open-recent-symbolic", None),
+    ("pf", "設定檔", "emblem-favorite-symbolic"),
+    ("hist", "快照與歷史", "document-open-recent-symbolic"),
     None,
-    ("mods", "模組中心", "view-app-grid-symbolic", "8"),
+    ("mods", "模組中心", "view-app-grid-symbolic"),
 ]
 
 
+def esc(s):
+    return GLib.markup_escape_text(s)
+
+
 def tile(text, i):
-    lb = Gtk.Label(label=_(text)[0].upper())
+    lb = Gtk.Label(label=(text or "?")[0].upper())
     lb.add_css_class("tile")
     lb.add_css_class(f"t{i % len(COLORS)}")
     lb.set_valign(Gtk.Align.CENTER)
@@ -231,8 +322,8 @@ def chip(text, kind="neutral"):
 
 
 def value(text):
-    """數值（版本、數量）：灰色小字，無底。"""
-    lb = Gtk.Label(label=_(text))
+    """數值（版本、數量）：灰色小字，無底。來自系統的文字，不翻譯。"""
+    lb = Gtk.Label(label=text)
     lb.add_css_class("caption")
     lb.add_css_class("dim-label")
     lb.set_valign(Gtk.Align.CENTER)
@@ -263,16 +354,17 @@ def group(title=None, desc=None):
     return g
 
 
-def row(title, sub=None, prefix=None, suffix=()):
-    r = Adw.ActionRow(title=_m(title))
+def row(title, sub=None, prefix=None, suffix=(), data=False):
+    """data=True：標題與副標題是系統資料（擴充功能名稱等），不經翻譯。"""
+    tr = esc if data else _m
+    r = Adw.ActionRow(title=tr(title))
     if sub:
-        r.set_subtitle(_m(sub))
+        r.set_subtitle(tr(sub))
     if prefix:
         r.add_prefix(prefix)
     for s in suffix:
         r.add_suffix(s)
     return r
-
 
 
 class Tuneup(Adw.Application):
@@ -282,11 +374,26 @@ class Tuneup(Adw.Application):
         self.lang_pref = lang or read_pref()  # --lang 只影響這次執行，不會存檔
         load_lang(self.lang_pref)
         self.pending = 0
+        self._settings = {}
+
+    def gs(self, schema):
+        """取得 Gio.Settings；系統沒有這個 schema 時回傳 None。"""
+        if schema not in self._settings:
+            found = Gio.SettingsSchemaSource.get_default().lookup(schema, True)
+            self._settings[schema] = Gio.Settings.new(schema) if found else None
+        return self._settings[schema]
+
+    def has_key(self, schema, key):
+        st = self.gs(schema)
+        return st is not None and st.props.settings_schema.has_key(key)
+
+    def read_only(self, *_args):
+        self.toast(READ_ONLY_MSG)
 
     def more_menu(self, labels):
         m = Gio.Menu()
         for t in labels:
-            m.append(_(t), "app.todo")
+            m.append(_(t), "app.readonly")
         b = Gtk.MenuButton(icon_name="view-more-symbolic", menu_model=m, valign=Gtk.Align.CENTER)
         b.add_css_class("flat")
         return b
@@ -294,14 +401,23 @@ class Tuneup(Adw.Application):
     def next_icon(self):
         return Gtk.Image(icon_name="go-next-symbolic")
 
-    def nav_row(self, title, sub, target, prefix=None, suffix=None):
-        r = row(title, sub, prefix)
+    def nav_row(self, title, sub, target, suffix=None):
+        r = row(title, sub)
         if suffix:
             r.add_suffix(suffix)
         r.add_suffix(self.next_icon())
         r.set_activatable(True)
-        r.connect("activated", lambda *_: self.goto(target))
+        r.connect("activated", lambda *_a: self.goto(target))
         return r
+
+    def customized(self):
+        """各分類中，使用者改過（與預設值不同）的調校項數量。"""
+        counts = []
+        for name, _icon, groups in TWEAKS:
+            n = sum(1 for _g, items in groups for _k, _t, schema, key, _x in items
+                    if self.has_key(schema, key) and self.gs(schema).get_user_value(key) is not None)
+            counts.append((name, n))
+        return counts
 
     # ---------- 總覽（仿「關於」頁） ----------
     def page_dash(self):
@@ -309,30 +425,43 @@ class Tuneup(Adw.Application):
         g = group()
         logo = Gtk.Image(icon_name="distributor-logo", pixel_size=32)
         logo.add_css_class("logo")
-        g.add(row("Ubuntu 24.04.2 LTS", "GNOME 46 · Wayland · Kernel 6.8.0-52", logo, [chip("已保護", "success")]))
+        g.add(row(self.sys_name, self.sys_detail, logo, data=True))
         p.add(g)
 
+        active = sum(1 for e in self.exts if e["state"] == EXT_STATE_ACTIVE)
+        updates = [e for e in self.exts if e["has_update"]]
+        broken = [e for e in self.exts if e["state"] in (EXT_STATE_ERROR, EXT_STATE_OUT_OF_DATE)]
+        counts = self.customized()
+        total = sum(n for _name, n in counts)
         g = group("概覽")
-        g.add(self.nav_row("擴充功能", "已安裝 24 個，21 個啟用", "ext", suffix=chip("3 個可更新", "warning")))
-        g.add(self.nav_row("已自訂的調校項", "外觀 8 · 視窗 5 · 其他 4", "tw0", suffix=value("17")))
-        g.add(self.nav_row("目前設定檔", "另有 3 組可切換", "pf", suffix=value("工作模式")))
-        p.add(g)
-
-        g = group("快照", "每次套用變更前會自動建立快照，隨時可還原")
-        g.add(self.nav_row("上次快照　今天 09:12", "查看完整歷史", "hist"))
+        g.add(self.nav_row("擴充功能", _("已安裝 {n} 個，{m} 個啟用").format(n=len(self.exts), m=active), "ext",
+                           chip(_("{n} 個可更新").format(n=len(updates)), "warning") if updates else None))
+        detail = " · ".join(f"{_(name)} {n}" for name, n in counts if n) or _("全部為預設值")
+        g.add(self.nav_row("已自訂的調校項", detail, "tw0", value(str(total))))
+        g.add(self.nav_row("目前設定檔", "尚未建立設定檔", "pf"))
+        g.add(self.nav_row("快照", "尚無快照", "hist"))
         p.add(g)
 
         g = group("待處理")
-        for t, s, icon, b in [("Dash to Dock 發生錯誤", "與 GNOME Shell 46 不相容", "dialog-error-symbolic", btn("檢視")),
-                              ("3 個擴充功能有新版本", "Blur my Shell、Caffeine、Vitals", "folder-download-symbolic", btn("全部更新", "suggested-action")),
-                              ("建議：啟用夜間護眼排程", "你的螢幕常在 22:00 後使用", "night-light-symbolic", btn("前往設定"))]:
-            g.add(row(t, s, Gtk.Image(icon_name=icon), [b]))
+        for e in broken:
+            title = _("{name} 發生錯誤").format(name=e["name"]) if e["state"] == EXT_STATE_ERROR else _("{name} 與目前的 GNOME Shell 不相容").format(name=e["name"])
+            b = btn("檢視")
+            b.connect("clicked", lambda *_a: self.goto("ext"))
+            g.add(row(title, e["error"] or e["uuid"], Gtk.Image(icon_name="dialog-error-symbolic"), [b], data=True))
+        if updates:
+            b = btn("檢視")
+            b.connect("clicked", lambda *_a: self.goto("ext"))
+            g.add(row(_("{n} 個擴充功能有新版本").format(n=len(updates)), "、".join(e["name"] for e in updates),
+                      Gtk.Image(icon_name="folder-download-symbolic"), [b], data=True))
+        if not broken and not updates:
+            g.add(row("沒有待處理的事項", "擴充功能都正常運作，也沒有可用的更新", Gtk.Image(icon_name="emblem-ok-symbolic")))
         p.add(g)
 
         g = group("快速開關")
-        for t, s, on in [("深色模式", "外觀", True), ("夜間護眼", "22:00 – 06:00", False),
-                         ("動畫效果", "視窗與工作區", True), ("省電模式", "自動", False)]:
-            g.add(Adw.SwitchRow(title=_m(t), subtitle=_m(s), active=on))
+        for item in QUICK:
+            w = self.tweak_row(item)
+            if w:
+                g.add(w)
         p.add(g)
         return p
 
@@ -342,89 +471,151 @@ class Tuneup(Adw.Application):
         tv.add_top_bar(Adw.HeaderBar())
         tv.set_content(content)
         self.mark_rows(tv)
-        return Adw.NavigationPage(title=_(title), child=tv)
+        return Adw.NavigationPage(title=title, child=tv)
+
+    def ext_chip(self, e):
+        if e["state"] == EXT_STATE_ERROR:
+            return chip("錯誤", "error")
+        if e["state"] == EXT_STATE_OUT_OF_DATE:
+            return chip("不相容", "error")
+        if e["has_update"]:
+            return chip("有更新", "warning")
+        return None
+
+    def locked_switch(self, active):
+        """唯讀模式下的開關：顯示真實狀態，但不可操作。"""
+        return Gtk.Switch(active=active, valign=Gtk.Align.CENTER, sensitive=False, tooltip_text=_(READ_ONLY_MSG))
 
     def ext_detail(self, i):
-        e = EXT[i]
+        e = self.exts[i]
         pg = Adw.PreferencesPage()
         g = group()
-        r = row(e[0], f"by {e[1]} · {e[2]}", tile(e[0], i))
-        r.add_suffix(chip("不相容 GNOME 46" if e[5] == "err" else "相容 GNOME 46", "error" if e[5] == "err" else "success"))
+        r = row(e["name"], e["uuid"], tile(e["name"], i), data=True)
+        c = self.ext_chip(e)
+        if c:
+            r.add_suffix(c)
+        if e["version"]:
+            r.add_suffix(value(e["version"]))
         g.add(r)
-        g.add(row("說明", e[3]))
+        if e["full_desc"]:
+            d = Adw.ActionRow(title=esc(e["full_desc"]), title_lines=0)
+            d.add_css_class("wrap")  # 說明全文允許換行，mark_rows 不會把它截成一行
+            g.add(d)
+        if e["error"]:
+            g.add(row(_("錯誤訊息"), e["error"], data=True))
         pg.add(g)
+
         g = group("設定")
-        g.add(Adw.SwitchRow(title=_m("啟用"), active=e[4]))
-        g.add(Adw.ComboRow(title=_m("位置"), model=Gtk.StringList.new([_("頂部列"), _("底部")])))
-        g.add(row("開啟完整偏好設定", suffix=[btn("開啟")]))
+        sw = Adw.SwitchRow(title=_m("啟用"), active=e["state"] == EXT_STATE_ACTIVE, sensitive=False)
+        g.add(sw)
+        if e["has_prefs"]:
+            b = btn("開啟")
+            b.connect("clicked", lambda *_a: subprocess.Popen(["gnome-extensions", "prefs", e["uuid"]]))
+            g.add(row("開啟偏好設定", suffix=[b]))
         pg.add(g)
+
         g = group("資訊")
-        g.add(row("權限", "讀取視窗、修改面板"))
-        g.add(row("來源", "extensions.gnome.org"))
-        g.add(row("支援的 Shell 版本", "45、46、47"))
+        g.add(row(_("來源"), _("系統內建") if e["system"] else _("使用者安裝"), data=True))
+        if e["url"]:
+            g.add(row(_("網址"), e["url"], data=True))
+        if e["shell"]:
+            g.add(row(_("支援的 Shell 版本"), ", ".join(e["shell"]), data=True))
+        g.add(row(_("路徑"), e["path"], data=True))
         pg.add(g)
-        g = group()
-        g.add(row("解除安裝", None, None, [btn("解除安裝", "destructive-action")]))
-        pg.add(g)
-        self.ext_nav.push(self.sub_page(e[0], pg))
+        if not e["system"]:
+            g = group()
+            b = btn("解除安裝", "destructive-action")
+            b.connect("clicked", self.read_only)
+            g.add(row("解除安裝", None, None, [b]))
+            pg.add(g)
+        self.ext_nav.push(self.sub_page(e["name"], pg))
+
+    def show_updates(self):
+        up = Adw.PreferencesPage()
+        updates = [(i, e) for i, e in enumerate(self.exts) if e["has_update"]]
+        g = group(_("{n} 個擴充功能有新版本").format(n=len(updates)) if updates else None)
+        for i, e in updates:
+            b = btn("更新")
+            b.connect("clicked", self.read_only)
+            g.add(row(e["name"], e["version"] or e["uuid"], tile(e["name"], i), [b], data=True))
+        if not updates:
+            g.add(row("全部都是最新版本", "GNOME Shell 沒有回報任何可用的更新", Gtk.Image(icon_name="emblem-ok-symbolic")))
+        up.add(g)
+        self.ext_nav.push(self.sub_page(_("更新"), up))
+
+    def show_explore(self):
+        dp = Adw.PreferencesPage()
+        g = group("熱門", _("支援 GNOME {v} 的擴充功能，資料來自 extensions.gnome.org").format(v=self.shell_version))
+        loading = row("載入中…")
+        g.add(loading)
+        dp.add(g)
+        installed = {e["uuid"] for e in self.exts}
+
+        def done(items, err):
+            g.remove(loading)
+            if err:
+                g.add(row(_("無法連線到 extensions.gnome.org"), err, Gtk.Image(icon_name="network-offline-symbolic"), data=True))
+            for i, d in enumerate(items):
+                if d.get("uuid") in installed:
+                    b = btn("已安裝")
+                    b.set_sensitive(False)
+                else:
+                    b = btn("安裝")
+                    b.connect("clicked", self.read_only)
+                desc = (d.get("description") or "").strip().split("\n")[0]
+                g.add(row(d.get("name", ""), desc, tile(d.get("name", ""), i), [b], data=True))
+            self.mark_rows(g)
+
+        fetch_popular(self.shell_version, done)
+        self.ext_nav.push(self.sub_page(_("探索擴充功能"), dp))
 
     def page_ext(self):
         nav = Adw.NavigationView()
         self.ext_nav = nav
         p = Adw.PreferencesPage()
         g = group()
-        g.add(Adw.SwitchRow(title=_m("全部擴充功能"), subtitle=_m("GNOME Shell 46　關閉即進入安全模式"), active=True))
+        master = Adw.SwitchRow(title=_m("全部擴充功能"), subtitle=_m("關閉即進入安全模式"), sensitive=False)
+        if self.has_key("org.gnome.shell", "disable-user-extensions"):
+            master.set_active(not self.gs("org.gnome.shell").get_boolean("disable-user-extensions"))
+        g.add(master)
         p.add(g)
 
         g = group()
-        # 更新子頁
-        up = Adw.PreferencesPage()
-        ug = group("3 個擴充功能有新版本")
-        ug.set_header_suffix(btn("全部更新", "suggested-action"))
-        for i, e in enumerate([EXT[0], EXT[3], EXT[2]]):
-            ug.add(row(e[0], f"{e[2]} → v{int(e[2][1:]) + 1} · " + _("修正 Wayland 下的閃爍、更新翻譯"), tile(e[0], i), [btn("更新")]))
-        up.add(ug)
-        r = row("更新", "3 個擴充功能有新版本", None, [chip("3", "warning"), self.next_icon()])
+        n = sum(1 for e in self.exts if e["has_update"])
+        r = row(_("更新"), _("{n} 個擴充功能有新版本").format(n=n) if n else _("全部都是最新版本"), None,
+                ([chip(str(n), "warning")] if n else []) + [self.next_icon()], data=True)
         r.set_activatable(True)
-        r.connect("activated", lambda *_: nav.push(self.sub_page("更新", up)))
+        r.connect("activated", lambda *_a: self.show_updates())
         g.add(r)
-        # 探索子頁
-        dp = Adw.PreferencesPage()
-        dg = group("熱門", "僅顯示支援 GNOME 46 的擴充功能")
-        for i, d in enumerate(DISC):
-            r2 = row(d[0], d[2], tile(d[0], i + 3))
-            b = btn("安裝")
-            b.connect("clicked", lambda b: (b.set_label(_("已安裝")), b.set_sensitive(False)))
-            r2.add_suffix(value(d[1]))
-            r2.add_suffix(b)
-            dg.add(r2)
-        dp.add(dg)
         r = row("探索", "從 extensions.gnome.org 安裝更多", None, [self.next_icon()])
         r.set_activatable(True)
-        r.connect("activated", lambda *_: nav.push(self.sub_page("探索擴充功能", dp)))
+        r.connect("activated", lambda *_a: self.show_explore())
         g.add(r)
         p.add(g)
 
         g = group("已安裝")
-        for i, e in enumerate(EXT):
-            r = Adw.ActionRow(title=GLib.markup_escape_text(e[0]), subtitle=_m(e[3]), activatable=True)
-            r.add_prefix(tile(e[0], i))
-            if e[5] == "err":
-                r.add_suffix(chip("不相容", "error"))
-            elif e[5] == "upd":
-                r.add_suffix(chip("有更新", "warning"))
-            r.add_suffix(value(e[2]))
-            r.add_suffix(Gtk.Switch(active=e[4], valign=Gtk.Align.CENTER))
+        if self.ext_error:
+            g.add(row(_("無法讀取擴充功能"), self.ext_error, Gtk.Image(icon_name="dialog-error-symbolic"), data=True))
+        elif not self.exts:
+            g.add(row("尚未安裝任何擴充功能", "可以從「探索」安裝"))
+        for i, e in enumerate(self.exts):
+            r = row(e["name"], e["desc"] or e["uuid"], tile(e["name"], i), data=True)
+            c = self.ext_chip(e)
+            if c:
+                r.add_suffix(c)
+            if e["version"]:
+                r.add_suffix(value(e["version"]))
+            r.add_suffix(self.locked_switch(e["state"] == EXT_STATE_ACTIVE))
             r.add_suffix(self.next_icon())
+            r.set_activatable(True)
             r.connect("activated", lambda _r, i=i: self.ext_detail(i))
             g.add(r)
         p.add(g)
-        tv = Adw.ToolbarView()
         nav.add(Adw.NavigationPage(title=_("擴充功能"), child=p))
         return nav
 
     # ---------- 系統調校：每個分類是一個側欄項目 ----------
-    def mark_dirty(self, *_):
+    def mark_dirty(self, *_args):
         self.pending += 1
         self.update_banner()
 
@@ -433,71 +624,91 @@ class Tuneup(Adw.Application):
         self.banner.set_title(_m("{n} 項未套用　套用前會自動建立快照").format(n=self.pending))
         self.banner.set_revealed(self.pending > 0 and on_tweak)
 
+    def tweak_row(self, item):
+        """依目前的 gsettings 值建立一列；系統沒有這個 key 時回傳 None。"""
+        kind, title, schema, key, extra = item
+        if not self.has_key(schema, key):
+            return None
+        st = self.gs(schema)
+        v = st.get_value(key).unpack()
+        sub = esc(f"{schema} {key}")
+        if kind == "switch":
+            w = Adw.SwitchRow(title=_m(title), subtitle=sub, active=extra(v) if extra else v)
+            w.connect("notify::active", self.mark_dirty)
+        elif kind in ("enum", "choice"):
+            if kind == "choice":
+                labels, reader = extra
+                labels, selected = [_(x) for x in labels], reader(v)
+            else:
+                options = list(extra() if callable(extra) else extra)
+                if v not in [val for _label, val in options]:
+                    options.append((str(v), v))  # 目前的值不在預設選項中，照實顯示
+                labels = [_(label) for label, _val in options]
+                selected = [val for _label, val in options].index(v)
+            w = Adw.ComboRow(title=_m(title), subtitle=sub, model=Gtk.StringList.new(labels), selected=selected)
+            w.connect("notify::selected", self.mark_dirty)
+        elif kind == "spin":
+            lo, hi, step = extra
+            w = Adw.SpinRow.new_with_range(lo, hi, step)
+            w.set_title(_m(title))
+            w.set_subtitle(sub)
+            w.set_digits(2 if step < 1 else 0)
+            w.set_value(v)
+            w.connect("notify::value", self.mark_dirty)
+        elif kind == "accent":
+            w = Adw.ActionRow(title=_m(title), subtitle=sub)
+            names = st.props.settings_schema.get_key(key).get_range().unpack()[1]
+            sbox = Gtk.Box(spacing=6, valign=Gtk.Align.CENTER)
+            first = None
+            for name in names:
+                t = Gtk.ToggleButton(tooltip_text=name)
+                t.add_css_class("swatch")
+                t.add_css_class("circular")
+                cp = Gtk.CssProvider()
+                cp.load_from_string(f"button{{background:{ACCENTS.get(name, '#888')};}}")
+                t.get_style_context().add_provider(cp, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+                if first is None:
+                    first = t
+                else:
+                    t.set_group(first)
+                t.set_active(name == v)
+                t.connect("toggled", lambda b: b.get_active() and self.mark_dirty())
+                sbox.append(t)
+            w.add_suffix(sbox)
+        else:  # info：只顯示目前的值
+            w = Adw.ActionRow(title=_m(title), subtitle=sub)
+            w.add_suffix(value(str(v)))
+        return w
+
     def tweak_page(self, groups):
         p = Adw.PreferencesPage()
         for gt, items in groups:
+            rows = [w for w in (self.tweak_row(item) for item in items) if w]
+            if not rows:
+                continue
             g = group(gt)
-            for kind, title, key, opt, val in items:
-                if kind == "switch":
-                    w = Adw.SwitchRow(title=_m(title), subtitle=key, active=val)
-                    w.connect("notify::active", self.mark_dirty)
-                elif kind == "combo":
-                    w = Adw.ComboRow(title=_m(title), subtitle=key, model=Gtk.StringList.new([_(o) for o in opt]), selected=val)
-                    w.connect("notify::selected", self.mark_dirty)
-                elif kind == "spin":
-                    w = Adw.SpinRow.new_with_range(*opt)
-                    w.set_title(_m(title))
-                    w.set_subtitle(key)
-                    w.set_value(val)
-                    w.set_digits(2 if opt[2] < 1 else 0)
-                    w.connect("notify::value", self.mark_dirty)
-                else:
-                    w = Adw.ActionRow(title=_m(title), subtitle=key)
-                    sbox = Gtk.Box(spacing=6, valign=Gtk.Align.CENTER)
-                    first = None
-                    for j, c in enumerate(opt):
-                        t = Gtk.ToggleButton()
-                        t.add_css_class("swatch")
-                        t.add_css_class("circular")
-                        cp = Gtk.CssProvider()
-                        cp.load_from_string(f"button{{background:{c};}}")
-                        t.get_style_context().add_provider(cp, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
-                        if first is None:
-                            first = t
-                        else:
-                            t.set_group(first)
-                        t.set_active(j == val)
-                        t.connect("toggled", lambda b: b.get_active() and self.mark_dirty())
-                        sbox.append(t)
-                    w.add_suffix(sbox)
+            for w in rows:
                 g.add(w)
             p.add(g)
         return p
-
-    def apply_tw(self, *_):
-        self.pending = 0
-        self.update_banner()
-        self.toast("已套用，並建立快照「調校 11:02」")
 
     # ---------- 設定檔 ----------
     def page_pf(self):
         p = Adw.PreferencesPage()
         g = group()
-        g.add(row("從目前狀態建立設定檔", "把整套調校與擴充功能打包，一鍵切換、匯出、分享", None, [btn("建立", "suggested-action")]))
+        b = btn("建立", "suggested-action")
+        b.connect("clicked", self.read_only)
+        g.add(row("從目前狀態建立設定檔", "把整套調校與擴充功能打包，一鍵切換、匯出、分享", None, [b]))
         p.add(g)
         g = group("我的設定檔")
-        for i, (n, d, act) in enumerate(PROFILES):
-            r = row(n, d, tile(n, i))
-            if act:
-                r.add_suffix(chip("使用中", "success"))
-            else:
-                r.add_suffix(btn("套用"))
-            r.add_suffix(self.more_menu(["更新為目前狀態", "預覽差異", "匯出", "刪除"] if act else ["預覽差異", "匯出", "刪除"]))
-            g.add(r)
+        g.add(row("尚無設定檔", "建立後會顯示在這裡", Gtk.Image(icon_name="emblem-favorite-symbolic")))
         p.add(g)
         g = group("匯入")
-        g.add(row("從檔案匯入", "選擇 .tuneup 設定檔", Gtk.Image(icon_name="document-open-symbolic"), [btn("選擇檔案")]))
-        g.add(row("從網址匯入", "GitHub Gist 或任何公開網址", Gtk.Image(icon_name="insert-link-symbolic"), [btn("貼上網址")]))
+        for title, sub, icon, label in (("從檔案匯入", "選擇 .tuneup 設定檔", "document-open-symbolic", "選擇檔案"),
+                                        ("從網址匯入", "GitHub Gist 或任何公開網址", "insert-link-symbolic", "貼上網址")):
+            b = btn(label)
+            b.connect("clicked", self.read_only)
+            g.add(row(title, sub, Gtk.Image(icon_name=icon), [b]))
         p.add(g)
         return p
 
@@ -505,46 +716,29 @@ class Tuneup(Adw.Application):
     def page_hist(self):
         p = Adw.PreferencesPage()
         g = group()
-        g.add(Adw.SwitchRow(title=_m("變更前自動建立快照"), subtitle=_m("還原本身也會建立快照，所以可以再退回"), active=True))
+        g.add(Adw.SwitchRow(title=_m("變更前自動建立快照"), subtitle=_m("還原本身也會建立快照，所以可以再退回"), active=True, sensitive=False))
         p.add(g)
         g = group("時間軸")
-        for t, s, diff in HISTORY:
-            ex = Adw.ExpanderRow(title=_m(t), subtitle=_m(s))
-            ex.add_prefix(Gtk.Image(icon_name="document-open-recent-symbolic"))
-            lines = []
-            for ln in diff.split("\n"):
-                ln = GLib.markup_escape_text(_(ln))
-                color = "#4fd18b" if ln.startswith("+") else "#ff6b6b" if ln.startswith("-") else "inherit"
-                lines.append(f'<span foreground="{color}">{ln}</span>')
-            lb = Gtk.Label(use_markup=True, label="\n".join(lines), xalign=0, selectable=True, wrap=True, max_width_chars=1)
-            lb.add_css_class("diff")
-            r = Adw.ActionRow()
-            r.set_child(lb)
-            ex.add_row(r)
-            ar = Adw.ActionRow()
-            b = btn("還原到此時間點")
-            b.connect("clicked", lambda *_: self.toast("已還原，並保留還原前的快照"))
-            ar.add_suffix(b)
-            ar.add_suffix(self.more_menu(["僅還原這一項", "匯出為設定檔"]))
-            ex.add_row(ar)
-            g.add(ex)
+        g.add(row("尚無紀錄", "透過 Tuneup 套用的變更會顯示在這裡", Gtk.Image(icon_name="document-open-recent-symbolic")))
         p.add(g)
         return p
 
     # ---------- 模組中心 ----------
     def page_mods(self):
         p = Adw.PreferencesPage()
+        live = sum(1 for m in MODULES if m[2])
         g = group()
-        g.add(row("模組", "每個功能是一個模組：頁面 + 動作 + 還原邏輯", None, [value("3 內建 · 5 規劃中")]))
+        g.add(row("模組", "每個功能是一個模組：頁面 + 動作 + 還原邏輯", None,
+                  [value(_("{a} 內建 · {b} 規劃中").format(a=live, b=len(MODULES) - live))]))
         p.add(g)
-        for title, live in (("內建模組", True), ("規劃中", False)):
+        for title, is_live in (("內建模組", True), ("規劃中", False)):
             g = group(title)
-            for i, (n, l, on, d) in enumerate(MODULES):
-                if on != live:
-                    continue
-                r = row(n, d, tile(l, i))
-                r.add_suffix(chip("內建", "success") if on else btn("想要 +1"))
-                g.add(r)
+            for i, (n, letter, on, d) in enumerate(MODULES):
+                if on == is_live:
+                    r = row(n, d, tile(letter, i))
+                    if on:
+                        r.add_suffix(chip("內建", "success"))
+                    g.add(r)
             p.add(g)
         g = group("架構")
         g.add(row("Tuneup Core", "狀態、快照、設定檔、搜尋", Gtk.Image(icon_name="emblem-system-symbolic")))
@@ -574,6 +768,7 @@ class Tuneup(Adw.Application):
         lb = Gtk.ListBox()
         lb.add_css_class("navigation-sidebar")
         self.rows = {}
+        badges = {"ext": sum(1 for e in self.exts if e["has_update"])}
         for item in SIDEBAR:
             if item is None:
                 sep = Gtk.ListBoxRow(selectable=False, activatable=False, focusable=False)
@@ -582,13 +777,13 @@ class Tuneup(Adw.Application):
                 sep.add_css_class("sep")
                 lb.append(sep)
                 continue
-            nid, title, icon, badge = item
+            nid, title, icon = item
             r = Gtk.ListBoxRow()
             h = Gtk.Box(spacing=12, margin_top=6, margin_bottom=6)
             h.append(Gtk.Image(icon_name=icon))
             h.append(Gtk.Label(label=_(title), xalign=0, hexpand=True))
-            if badge:
-                bl = Gtk.Label(label=badge)
+            if badges.get(nid):
+                bl = Gtk.Label(label=str(badges[nid]))
                 bl.add_css_class("caption")
                 bl.add_css_class("accent")
                 h.append(bl)
@@ -605,11 +800,10 @@ class Tuneup(Adw.Application):
         from gi.repository import Gdk
         Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
-        for name, cb in (("snapshot", lambda *_: self.toast("已建立快照")), ("todo", lambda *_: self.toast("示範畫面：尚未實作")), ("theme", self.flip_theme)):
+        for name, cb in (("readonly", self.read_only), ("theme", self.flip_theme), ("reload", lambda *_a: self.build_ui(self.stack.get_visible_child_name()))):
             a = Gio.SimpleAction.new(name, None)
             a.connect("activate", cb)
             self.add_action(a)
-
         la = Gio.SimpleAction.new_stateful("lang", GLib.VariantType.new("s"), GLib.Variant("s", self.lang_pref))
         la.connect("activate", self.on_lang)
         self.add_action(la)
@@ -631,8 +825,11 @@ class Tuneup(Adw.Application):
         GLib.idle_add(lambda: self.build_ui(page) and False)
 
     def build_ui(self, page="dash"):
+        """讀取系統目前的狀態並建立整個畫面；重新整理與切換語言都走這裡。"""
         win = self.win
         self.pending = 0
+        self.sys_name, self.sys_detail, self.shell_version = load_system()
+        self.exts, self.ext_error = load_extensions()
         self.toasts = Adw.ToastOverlay()
         self.split = split = Adw.NavigationSplitView(min_sidebar_width=240, max_sidebar_width=280)
 
@@ -643,7 +840,7 @@ class Tuneup(Adw.Application):
         sbtn = Gtk.ToggleButton(icon_name="system-search-symbolic", tooltip_text=_("搜尋"))
         hb.pack_start(sbtn)
         menu = Gio.Menu()
-        menu.append(_("建立快照"), "app.snapshot")
+        menu.append(_("重新整理"), "app.reload")
         menu.append(_("切換深淺色"), "app.theme")
         langs = Gio.Menu()
         for code, name in LANGS:
@@ -664,18 +861,19 @@ class Tuneup(Adw.Application):
 
         # 內容
         self.stack = Adw.ViewStack()
+        ctv = Adw.ToolbarView()
+        ctv.add_top_bar(Adw.HeaderBar())
+        self.banner = Adw.Banner(title="", button_label=_("套用變更"))
+        self.banner.connect("button-clicked", self.read_only)
+        ctv.add_top_bar(self.banner)
         self.stack.add_named(self.page_dash(), "dash")
         self.stack.add_named(self.page_ext(), "ext")
-        for i, (name, icon, groups) in enumerate(TWEAKS):
+        for i, (_name, _icon, groups) in enumerate(TWEAKS):
             self.stack.add_named(self.tweak_page(groups), f"tw{i}")
         self.stack.add_named(self.page_pf(), "pf")
         self.stack.add_named(self.page_hist(), "hist")
         self.stack.add_named(self.page_mods(), "mods")
-        ctv = Adw.ToolbarView()
-        ctv.add_top_bar(Adw.HeaderBar())
-        self.banner = Adw.Banner(title="", button_label=_("套用變更"))
-        self.banner.connect("button-clicked", self.apply_tw)
-        ctv.add_top_bar(self.banner)
+        self.pending = 0
         ctv.set_content(self.stack)
         self.content_page = Adw.NavigationPage(title=_("總覽"), child=ctv)
         split.set_content(self.content_page)
@@ -690,7 +888,8 @@ class Tuneup(Adw.Application):
         c = w.get_first_child()
         while c:
             if isinstance(c, Adw.ActionRow):
-                c.set_title_lines(1)      # 譯文再長也只佔一行，超出以 … 截斷
+                if not c.has_css_class("wrap"):
+                    c.set_title_lines(1)      # 譯文再長也只佔一行，超出以 … 截斷
                 c.set_subtitle_lines(1)
                 if c.get_subtitle():
                     c.add_css_class("two-line")
@@ -699,13 +898,14 @@ class Tuneup(Adw.Application):
 
     def on_search(self, entry):
         q = entry.get_text().strip().lower()
-        def f(r):
+
+        def match(r):
             if getattr(r, "nid", None) is None:
                 return not q
             return not q or q in r.ntitle.lower()
-        self.nav_list.set_filter_func(f)
+        self.nav_list.set_filter_func(match)
 
-    def flip_theme(self, *_):
+    def flip_theme(self, *_args):
         m = Adw.StyleManager.get_default()
         m.set_color_scheme(Adw.ColorScheme.FORCE_LIGHT if m.get_dark() else Adw.ColorScheme.FORCE_DARK)
 
@@ -723,15 +923,13 @@ class Tuneup(Adw.Application):
         ids = [x[0] for x in SIDEBAR if x]
         if i < len(ids):
             self.goto(ids[i])
-            if ids[i] == "tw0":
-                self.mark_dirty()
             GLib.timeout_add(500, lambda: (self.snap(f"{i:02d}-{ids[i]}"), GLib.timeout_add(100, self.shoot, i + 1), False)[2])
         else:
             if os.environ.get("TUNEUP_I18N_CHECK"):  # 把延遲建立的子頁面與提示也跑過一次
-                for j in range(len(EXT)):
+                for j in range(len(self.exts)):
                     self.ext_detail(j)
-                for t in ("已建立快照", "示範畫面：尚未實作", "已套用，並建立快照「調校 11:02」", "已還原，並保留還原前的快照", "已安裝"):
-                    _(t)
+                self.show_updates()
+                _(READ_ONLY_MSG)
             self.quit()
         return False
 
