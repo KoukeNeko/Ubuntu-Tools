@@ -24,6 +24,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+import audio
 import store
 import system
 
@@ -447,7 +448,8 @@ MODULES = [
 ]
 SIDEBAR = (  # (id, 標題, 圖示)；None = 分隔線。調校分類直接由 TWEAKS 產生
     [("dash", "總覽", "go-home-symbolic"), ("ext", "擴充功能", "application-x-addon-symbolic"), None]
-    + [(f"tw{i}", name, icon) for i, (name, icon, _groups) in enumerate(TWEAKS)]
+    + [entry for i, (name, icon, _groups) in enumerate(TWEAKS)
+       for entry in [(f"tw{i}", name, icon)] + ([("audio", "音訊裝置", "audio-card-symbolic")] if name == "音效" else [])]
     + [("startup", "啟動應用程式", "system-run-symbolic"), None,
        ("cleanup", "系統清理", "user-trash-symbolic"), ("hardware", "驅動與硬體", "computer-symbolic"),
        ("backup", "備份與還原", "drive-harddisk-symbolic"), None,
@@ -557,12 +559,12 @@ class Tuneup(Adw.Application):
         self.search_text = ""
 
     # ---------- 共用對話框 ----------
-    def confirm(self, heading, body, action_label, on_yes, destructive=False):
+    def confirm(self, heading, body, action_label, on_yes, destructive=False, on_no=None):
         d = Adw.AlertDialog(heading=_(heading), body=body)
         d.add_response("cancel", _("取消"))
         d.add_response("ok", _(action_label))
         d.set_response_appearance("ok", Adw.ResponseAppearance.DESTRUCTIVE if destructive else Adw.ResponseAppearance.SUGGESTED)
-        d.connect("response", lambda _d, r: r == "ok" and on_yes())
+        d.connect("response", lambda _d, r: on_yes() if r == "ok" else on_no and on_no())
         d.present(self.win)
 
     def prompt(self, heading, label, action_label, on_text):
@@ -1073,6 +1075,105 @@ class Tuneup(Adw.Application):
             p.add(g)
         return p
 
+    # ---------- 音訊裝置 ----------
+    AUDIO_TITLES = {"default-sink": "預設輸出", "default-source": "預設輸入", "force-rate": "取樣率", "force-quantum": "緩衝區大小",
+                    "allowed-rates": "自動切換取樣率", "config": "音訊的開機預設"}
+
+    def audio_commit(self, change, message):
+        """音訊變更立即生效並記入歷史；PipeWire 需要一點時間更新狀態，稍後再重新讀取。"""
+        if self.loading:
+            return
+        try:
+            done = store.apply("audio", [change])
+            message = _(message) if done else _("沒有需要變更的項目")
+        except (RuntimeError, OSError, GLib.Error) as err:
+            message = _("無法套用：{error}").format(error=str(err))
+        GLib.timeout_add(500, lambda: (self.reload("audio"), self.toast_raw(message), False)[2])
+
+    def choice_row(self, title, sub, labels, selected, on_pick):
+        """立即生效的下拉列：選了就呼叫 on_pick(索引)。"""
+        w = Adw.ComboRow(title=esc(title), subtitle=esc(sub or ""), model=Gtk.StringList.new(labels), selected=selected)
+        w.connect("notify::selected", lambda r, _p: r.get_selected() != selected and on_pick(r.get_selected()))
+        return w
+
+    def page_audio(self):
+        p = Adw.PreferencesPage()
+        state = audio.read_state()
+        if state is None:
+            g = group()
+            g.add(row("無法讀取音訊裝置", "PipeWire 沒有執行，或系統使用的是其他音效伺服器", Gtk.Image(icon_name="dialog-error-symbolic")))
+            p.add(g)
+            return p
+        rate, quantum = audio.clock_int(state, "rate"), audio.clock_int(state, "quantum")
+        force_rate, force_quantum = audio.clock_int(state, "force-rate"), audio.clock_int(state, "force-quantum")
+        latency = f"{quantum / rate * 1000:.1f}" if rate else "?"
+        g = group()
+        g.add(row("PipeWire", _("{rate} Hz · 緩衝區 {quantum} 個取樣（約 {ms} 毫秒）").format(rate=rate, quantum=quantum, ms=latency),
+                  Gtk.Image(icon_name="audio-card-symbolic"), data=True))
+        p.add(g)
+
+        g = group("預設裝置")
+        for what, nodes, current in (("default-sink", state["sinks"], state["default_sink"]), ("default-source", state["sources"], state["default_source"])):
+            names = [n["name"] for n in nodes]
+            if nodes:
+                g.add(self.choice_row(_(self.AUDIO_TITLES[what]), None, [n["description"] for n in nodes], names.index(current) if current in names else 0,
+                                      lambda i, what=what, nodes=nodes, current=current: self.audio_commit(
+                                          audio.change(what, current, nodes[i]["name"], label=nodes[i]["description"]), "已變更預設裝置")))
+        p.add(g)
+
+        g = group("格式", "取樣率與緩衝區是全系統共用的。這裡的變更立即生效，但登出後會還原，除非開啟「設為開機預設」")
+        rates = [0] + audio.RATES
+        g.add(self.choice_row(_("取樣率"), "clock.force-rate", [_("自動（目前 {rate} Hz）").format(rate=rate)] + [f"{r} Hz" for r in audio.RATES],
+                              rates.index(force_rate) if force_rate in rates else 0,
+                              lambda i: self.audio_commit(audio.change("force-rate", force_rate, rates[i]), "已變更取樣率")))
+        quanta = [0] + audio.QUANTA
+        g.add(self.choice_row(_("緩衝區大小"), "clock.force-quantum",
+                              [_("自動（目前 {n}）").format(n=quantum)] + [_("{n} 個取樣（約 {ms} 毫秒）").format(n=q, ms=f"{q / (rate or 48000) * 1000:.1f}") for q in audio.QUANTA],
+                              quanta.index(force_quantum) if force_quantum in quanta else 0,
+                              lambda i: self.audio_commit(audio.change("force-quantum", force_quantum, quanta[i]), "已變更緩衝區大小")))
+        allowed = audio.allowed_rates(state)
+        auto = Adw.SwitchRow(title=_m("自動切換取樣率"), subtitle=_m("播放 44.1 kHz 或高解析音樂時切換到原始取樣率，不重新取樣"), active=len(allowed) > 1)
+        auto.connect("notify::active", lambda w, _p: self.audio_commit(
+            audio.change("allowed-rates", allowed, audio.RATES if w.get_active() else [rate or 48000]), "已變更允許的取樣率"))
+        g.add(auto)
+        saved = audio.read_config()
+        wanted = {key: val for key, val in (("rate", force_rate), ("quantum", force_quantum), ("allowed-rates", allowed if len(allowed) > 1 else None)) if val}
+        boot = Adw.SwitchRow(title=_m("設為開機預設"), subtitle=_m("把上面三項寫入設定檔並重新啟動音效服務"), active=saved is not None)
+
+        def toggle_boot(w, _p):
+            if self.loading:
+                return
+            target = wanted if w.get_active() else None
+            if target == {}:
+                self.reload("audio")
+                return self.toast("上面三項都是自動，沒有需要儲存的設定")
+            self.confirm("重新啟動音效服務？", _("所有正在播放的聲音會中斷一兩秒。"), "重新啟動",
+                         lambda: self.audio_commit(audio.change("config", saved, target), "已更新開機預設"),
+                         on_no=lambda: self.reload("audio"))  # 取消時把開關撥回原位
+        boot.connect("notify::active", toggle_boot)
+        g.add(boot)
+        p.add(g)
+
+        g = group("裝置模式", "切換立體聲、環繞、專業音訊，或關閉某個裝置")
+        for d in state["devices"]:
+            nodes = [n for n in state["sinks"] + state["sources"] if n["device_id"] == d["id"] and n["rate"]]
+            fmt = " · ".join(f"{n['format']} {n['rate']} Hz {n['channels']}ch" for n in nodes) or _("閒置")
+            names = [pr["name"] for pr in d["profiles"]]
+            g.add(self.choice_row(d["description"], fmt, [pr["description"] for pr in d["profiles"]], names.index(d["profile"]) if d["profile"] in names else 0,
+                                  lambda i, d=d: self.audio_commit(audio.change("profile", d["profile"], d["profiles"][i]["name"], name=d["name"], label=d["description"]), "已變更裝置模式")))
+        if not state["devices"]:
+            g.add(row("沒有偵測到音訊裝置", "接上裝置後按選單裡的「重新整理」"))
+        p.add(g)
+
+        g = group("MIDI 裝置")
+        midi = audio.midi_devices()
+        for name in midi:
+            g.add(row(name, None, Gtk.Image(icon_name="audio-x-generic-symbolic"), data=True))
+        if not midi:
+            g.add(row("沒有偵測到 MIDI 裝置", "接上裝置後按選單裡的「重新整理」"))
+        p.add(g)
+        return p
+
     # ---------- 啟動應用程式 ----------
     def autostart_entries(self):
         entries = []
@@ -1379,7 +1480,15 @@ class Tuneup(Adw.Application):
         return p
 
     # ---------- 歷史 ----------
+    def audio_value(self, v):
+        """歷史裡的音訊值：0 或空值代表自動。"""
+        return _("自動") if not v else ", ".join(str(x) for x in v) if isinstance(v, list) else str(v)
+
     def change_title(self, c):
+        if c["type"] == "audio":
+            if c["what"] == "profile":
+                return _("裝置模式：{name}").format(name=c["label"])
+            return _(self.AUDIO_TITLES[c["what"]])
         if c["type"] == "extension":
             return (_("啟用 {name}") if c["new"] else _("停用 {name}")).format(name=c["name"])
         return _(KEY_TITLES.get((c["schema"], c["key"]), c["key"]))
@@ -1387,6 +1496,8 @@ class Tuneup(Adw.Application):
     def change_line(self, c):
         if c["type"] == "extension":
             return self.change_title(c)
+        if c["type"] == "audio":
+            return f"{self.change_title(c)}: {self.audio_value(c['old'])} → {self.audio_value(c['new'])}"
         default = _("預設值")
         return f"{self.change_title(c)}: {c['old'] or default} → {c['new'] or default}"
 
@@ -1407,6 +1518,8 @@ class Tuneup(Adw.Application):
         for c in e["changes"]:
             if c["type"] == "extension":
                 name, old, new = c["name"], off if not c["old"] else on, on if c["new"] else off
+            elif c["type"] == "audio":
+                name, old, new = self.change_title(c), self.audio_value(c["old"]), self.audio_value(c["new"])
             else:
                 name, old, new = c["key"], c["old"] or default, c["new"] or default
             lines.append(f'<span foreground="#ff6b6b">- {esc(name)}: {esc(str(old))}</span>')
@@ -1416,8 +1529,8 @@ class Tuneup(Adw.Application):
     def undo_entry(self, entry_id):
         try:
             done = store.undo(entry_id)
-        except GLib.Error as err:
-            return self.toast_raw(_("無法套用：{error}").format(error=err.message))
+        except (GLib.Error, RuntimeError, OSError) as err:
+            return self.toast_raw(_("無法套用：{error}").format(error=str(err)))
         self.pending = {}
         GLib.timeout_add(300, lambda: (self.reload("hist"), self.toast("已還原" if done else "沒有需要變更的項目"), False)[2])
 
@@ -1425,8 +1538,8 @@ class Tuneup(Adw.Application):
         def run():
             try:
                 done = store.restore_to(int(entry_id))
-            except GLib.Error as err:
-                return self.toast_raw(_("無法套用：{error}").format(error=err.message))
+            except (GLib.Error, RuntimeError, OSError) as err:
+                return self.toast_raw(_("無法套用：{error}").format(error=str(err)))
             self.pending = {}
             GLib.timeout_add(300, lambda: (self.reload("hist"), self.toast("已還原" if done else "沒有需要變更的項目"), False)[2])
         self.confirm("還原到這個時間點？", _("在這之後的所有變更都會被反轉。這次還原也會記入歷史，可以再退回。"), "還原", run)
@@ -1619,6 +1732,7 @@ class Tuneup(Adw.Application):
         self.stack.add_named(self.page_ext(), "ext")
         for i, (_name, _icon, groups) in enumerate(TWEAKS):
             self.stack.add_named(self.tweak_page(f"tw{i}", groups), f"tw{i}")
+        self.stack.add_named(self.page_audio(), "audio")
         self.stack.add_named(self.page_startup(), "startup")
         self.stack.add_named(self.page_cleanup(), "cleanup")
         self.stack.add_named(self.page_hardware(), "hardware")
