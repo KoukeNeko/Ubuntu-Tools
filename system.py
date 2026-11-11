@@ -232,3 +232,55 @@ def parse_journal(text):
 
 def boot_errors(limit=500):
     return parse_journal(run(["journalctl", "-b", "-p", "err", "-o", "json", "--no-pager", "-n", str(limit)])[1])
+
+
+# ---------- 搜尋與安裝 ----------
+def parse_apt_search(text, query):
+    """apt-cache search 的輸出 -> [{"name", "summary"}]，名稱完全相符或以關鍵字開頭的排前面。"""
+    found = [{"name": name, "summary": summary} for name, summary in re.findall(r"^(\S+) - (.*)$", text, re.M)]
+    return sorted(found, key=lambda p: (p["name"] != query, not p["name"].startswith(query), p["name"]))
+
+
+def parse_snap_find(text):
+    """snap find 的輸出 -> [{"name", "version", "publisher", "summary"}]"""
+    found = []
+    for line in text.splitlines()[1:]:
+        cols = re.split(r"\s{2,}", line.strip(), maxsplit=4)
+        if len(cols) == 5:
+            found.append({"name": cols[0], "version": cols[1], "publisher": cols[2].rstrip("*✓"), "summary": cols[4]})
+    return found
+
+
+def search_apps(query, limit=12):
+    query = query.strip().lstrip("-").lower()  # 不讓關鍵字被當成指令選項
+    if not query:
+        return {"apt": [], "snap": []}
+    return {"apt": parse_apt_search(run(["apt-cache", "search", "--names-only", query])[1], query)[:limit],
+            "snap": parse_snap_find(run(["snap", "find", query], timeout=15)[1])[:limit]}
+
+
+# ---------- 更新紀錄與暫緩 ----------
+APT_HISTORY = Path("/var/log/apt/history.log")
+
+
+def parse_apt_history(text):
+    """apt 的 history.log -> [{"time", "command", "install", "upgrade", "remove"}]，最近的在前。"""
+    entries = []
+    for block in text.split("\n\n"):
+        fields = dict(re.findall(r"^([A-Za-z-]+): (.*)$", block, re.M))
+        if "Start-Date" not in fields:
+            continue
+        count = {kind: len(re.findall(r"\S+ \(", fields.get(kind.capitalize(), ""))) for kind in ("install", "upgrade", "remove")}
+        entries.append({"time": " ".join(fields["Start-Date"].split()), "command": fields.get("Commandline", ""), **count})
+    return entries[::-1]
+
+
+def apt_history(limit=15):
+    try:
+        return parse_apt_history(APT_HISTORY.read_text(errors="replace"))[:limit]
+    except OSError:
+        return []
+
+
+def held():
+    return run(["apt-mark", "showhold"])[1].split()

@@ -58,6 +58,28 @@ class SystemTest(unittest.TestCase):
         items = system.parse_journal(lines)
         self.assertEqual([(i["source"], i["count"], i["time"]) for i in items], [("systemd", 2, 3), ("foo", 1, 2)])
 
+    def test_apt_search_ranks_exact_then_prefix(self):
+        text = "libvlc-bin - tools\nvlc-data - data files\nvlc - multimedia player\n"
+        self.assertEqual([p["name"] for p in system.parse_apt_search(text, "vlc")], ["vlc", "vlc-data", "libvlc-bin"])
+
+    def test_snap_find(self):
+        text = ("Name   Version  Publisher   Notes  Summary\n"
+                "vlc    3.0.20   videolan**  -      The ultimate media player\n")
+        self.assertEqual(system.parse_snap_find(text), [{"name": "vlc", "version": "3.0.20", "publisher": "videolan", "summary": "The ultimate media player"}])
+        self.assertEqual(system.parse_snap_find("error: unable to contact snap store\n"), [])
+
+    def test_search_ignores_empty_and_option_like_queries(self):
+        self.assertEqual(system.search_apps("  "), {"apt": [], "snap": []})
+        self.assertEqual(system.search_apps("--"), {"apt": [], "snap": []})
+
+    def test_apt_history(self):
+        text = ("\nStart-Date: 2026-11-12  00:08:31\nCommandline: apt-get install -y timeshift\n"
+                "Install: libxapp1:amd64 (3.2.2-2, automatic), timeshift:amd64 (24.06)\nEnd-Date: 2026-11-12  00:08:34\n"
+                "\nStart-Date: 2026-11-12  00:09:00\nCommandline: apt-get upgrade\nUpgrade: gdm3:amd64 (51.0, 51.1)\nRemove: foo:amd64 (1)\n")
+        entries = system.parse_apt_history(text)
+        self.assertEqual([(e["time"], e["install"], e["upgrade"], e["remove"]) for e in entries],
+                         [("2026-11-12 00:09:00", 0, 1, 1), ("2026-11-12 00:08:31", 2, 0, 0)])
+
     def test_missing_command(self):
         self.assertEqual(system.run(["tuneup-no-such-command"]), (-1, ""))
 
