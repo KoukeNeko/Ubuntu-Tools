@@ -1032,7 +1032,7 @@ class Tuneup(Adw.Application):
         elif kind == "accent":
             w = Adw.ActionRow(title=_m(title), subtitle=sub)
             names = store.settings(schema).props.settings_schema.get_key(key).get_range().unpack()[1]
-            sbox = Gtk.Box(spacing=6, valign=Gtk.Align.CENTER)
+            sbox = Gtk.Box(spacing=3, valign=Gtk.Align.CENTER)  # 十個色票；間距再大，這一頁的最小寬度會超過 400
             buttons = {}
             for name in names:
                 t = Gtk.ToggleButton(tooltip_text=name, group=next(iter(buttons.values()), None))
@@ -1755,7 +1755,9 @@ class Tuneup(Adw.Application):
         for n, e in enumerate(reversed(history[-50:])):
             ex = Adw.ExpanderRow(title=esc(self.entry_title(e)), subtitle=esc(when(e["time"])))
             ex.add_prefix(Gtk.Image(icon_name="document-open-recent-symbolic"))
-            lb = Gtk.Label(use_markup=True, label=self.diff_markup(e), xalign=0, selectable=True, wrap=True, max_width_chars=1)
+            # 設定鍵與值常是沒有空白的長字串，必須允許在字元間換行，否則會把整頁撐寬
+            lb = Gtk.Label(use_markup=True, label=self.diff_markup(e), xalign=0, selectable=True, wrap=True, max_width_chars=1,
+                           wrap_mode=Pango.WrapMode.WORD_CHAR)
             lb.add_css_class("diff")
             r = Adw.ActionRow()
             r.set_child(lb)
@@ -1962,6 +1964,9 @@ class Tuneup(Adw.Application):
         """有副標題的列加上 two-line，讓列高一致（見 DESIGN.md §2）。"""
         c = w.get_first_child()
         while c:
+            if isinstance(c, Adw.ExpanderRow):
+                c.set_title_lines(1)
+                c.set_subtitle_lines(1)
             if isinstance(c, Adw.ActionRow):
                 if not c.has_css_class("wrap"):
                     c.set_title_lines(1)      # 譯文再長也只佔一行，超出以 … 截斷
