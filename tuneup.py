@@ -177,6 +177,24 @@ def load_system():
     return name, " · ".join(p for p in parts if p), shell
 
 
+def os_logo():
+    """發行版的標誌。直接讀 os-release 指定的圖檔，不經過圖示主題：使用者換了圖示主題後，主題裡不一定有這個圖示。"""
+    name = "distributor-logo"
+    try:
+        for line in Path("/etc/os-release").read_text().splitlines():
+            if line.startswith("LOGO="):
+                name = line.split("=", 1)[1].strip('"')
+    except OSError:
+        pass
+    for ext in ("svg", "png"):
+        path = Path("/usr/share/pixmaps") / f"{name}.{ext}"
+        if path.exists():
+            return Gtk.Image(file=str(path), pixel_size=48)
+    if Gtk.IconTheme.get_for_display(Gdk.Display.get_default()).has_icon(name):
+        return Gtk.Image(icon_name=name, pixel_size=48)
+    return Gtk.Image(icon_name="computer-symbolic", pixel_size=32)
+
+
 def in_background(work, done):
     """在背景執行緒跑 work()，結束後在主執行緒呼叫 done(結果, 錯誤訊息)。"""
     def run():
@@ -719,8 +737,7 @@ class Tuneup(Adw.Application):
     def page_dash(self):
         p = Adw.PreferencesPage()
         g = group()
-        logo = Gtk.Image(icon_name="distributor-logo", pixel_size=32)
-        logo.add_css_class("logo")
+        logo = os_logo()
         g.add(row(self.sys_name, self.sys_detail, logo, data=True))
         p.add(g)
 
