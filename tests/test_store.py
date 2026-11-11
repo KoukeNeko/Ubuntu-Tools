@@ -3,9 +3,11 @@
 執行：python3 -m unittest discover tests
 """
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 os.environ["GSETTINGS_BACKEND"] = "memory"
@@ -98,6 +100,21 @@ class StoreTest(unittest.TestCase):
         with mock.patch.object(store, "delete_profile", lambda name: store._profile_path(name).unlink()):
             store.rename_profile("a", "c")
         self.assertEqual(sorted(p["name"] for p in store.load_profiles()), ["b", "c"])
+
+    def test_schema_shipped_inside_an_extension(self):
+        ext = Path(tempfile.mkdtemp(prefix="tuneup-ext-")) / "demo@test" / "schemas"
+        ext.mkdir(parents=True)
+        (ext / "org.tuneup.test.demo.gschema.xml").write_text(
+            '<schemalist><schema id="org.tuneup.test.demo" path="/org/tuneup/test/demo/">'
+            '<key name="name" type="s"><default>""</default></key></schema></schemalist>')
+        subprocess.run(["glib-compile-schemas", str(ext)], check=True)
+        self.assertIsNone(store.settings("org.tuneup.test.demo"))
+        with mock.patch.object(store, "EXTENSION_DIRS", (ext.parent.parent,)):
+            self.assertIsNone(store.settings("org.tuneup.test.demo"))  # 還記得剛才找不到
+            store.forget_absent()
+            self.assertTrue(store.has_key("org.tuneup.test.demo", "name"))
+            store.apply("tweak", [store.gsettings_change("org.tuneup.test.demo", "name", "'Fluent'")])
+            self.assertEqual(store.settings("org.tuneup.test.demo").get_string("name"), "Fluent")
 
 
 if __name__ == "__main__":

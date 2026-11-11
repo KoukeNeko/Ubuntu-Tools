@@ -16,15 +16,43 @@ PROFILE_DIR = DATA_DIR / "profiles"
 SHELL_BUS = ("org.gnome.Shell.Extensions", "/org/gnome/Shell/Extensions")
 MASTER = ("org.gnome.shell", "disable-user-extensions")
 
+EXTENSION_DIRS = (Path(GLib.get_user_data_dir()) / "gnome-shell" / "extensions", Path("/usr/share/gnome-shell/extensions"))
+
 _settings = {}
+_absent = set()  # 找過但不存在的 schema，避免每次都重掃擴充功能資料夾
+
+
+def extension_schema(schema):
+    """從網站安裝的擴充功能把 schema 放在自己的資料夾裡，系統的 schema 清單查不到，要另外找。"""
+    default = Gio.SettingsSchemaSource.get_default()
+    for base in EXTENSION_DIRS:
+        for compiled in sorted(base.glob("*/schemas/gschemas.compiled")):
+            try:
+                source = Gio.SettingsSchemaSource.new_from_directory(str(compiled.parent), default, False)
+            except GLib.Error:
+                continue  # 這個擴充功能的 schema 檔損毀，不影響其他的
+            found = source.lookup(schema, False)
+            if found:
+                return found
+    return None
 
 
 def settings(schema):
-    """取得 Gio.Settings；系統沒有這個 schema 時回傳 None。"""
+    """取得 Gio.Settings；系統與已安裝的擴充功能都沒有這個 schema 時回傳 None。"""
+    if schema in _absent:
+        return None
     if schema not in _settings:
-        found = Gio.SettingsSchemaSource.get_default().lookup(schema, True)
-        _settings[schema] = Gio.Settings.new(schema) if found else None
+        found = Gio.SettingsSchemaSource.get_default().lookup(schema, True) or extension_schema(schema)
+        if not found:
+            _absent.add(schema)
+            return None
+        _settings[schema] = Gio.Settings.new_full(found, None, None)
     return _settings[schema]
+
+
+def forget_absent():
+    """安裝或移除擴充功能後呼叫，下次查詢時重新找一次原本不存在的 schema。"""
+    _absent.clear()
 
 
 def has_key(schema, key):
