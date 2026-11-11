@@ -25,6 +25,7 @@ import urllib.request
 from pathlib import Path
 
 import store
+import system
 
 I18N_DIR = Path(__file__).resolve().parent / "i18n"
 CONF = Path(GLib.get_user_config_dir()) / "tuneup" / "config.json"
@@ -270,6 +271,7 @@ IDLE_ACTIONS = [("暫停", "suspend"), ("休眠", "hibernate"), ("關機", "shut
 # 某個設定只在另一個設定符合條件時才有作用：{被控制的 key: (控制它的 key, 條件)}
 DEPENDS = {
     (IF, "font-rgba-order"): ((IF, "font-antialiasing"), lambda v: v == "rgba"),
+    (WM, "num-workspaces"): ((MUTTER, "dynamic-workspaces"), lambda v: not v),
 }
 
 TWEAKS = [  # (分類, 圖示, [(群組, [項目])])；群組可以多帶一個說明：(群組, 說明, [項目])
@@ -437,16 +439,18 @@ MODULES = [
     ("系統調校", "T", True, "GNOME Tweaks 的全部功能，加上變更預覽與還原"),
     ("設定檔與歷史", "P", True, "打包、分享、還原整套設定"),
     ("啟動應用程式", "S", True, "登入時自動啟動的程式"),
-    ("備份與還原", "B", False, "系統還原點、個人檔案備份、完整映像檔"),
+    ("備份與還原", "B", True, "系統還原點、個人檔案備份、完整映像檔的引導"),
     ("應用程式", "A", False, "統一管理 apt、Snap、Flatpak，附來源與大小"),
-    ("系統清理", "C", False, "舊核心、快取、孤立套件與日誌，先預覽再清"),
-    ("驅動與硬體", "D", False, "顯示卡驅動切換、韌體更新、電池健康"),
+    ("系統清理", "C", True, "舊核心、快取、孤立套件與日誌，先預覽再清"),
+    ("驅動與硬體", "D", True, "電池健康、韌體版本、建議的驅動程式"),
     ("外掛 SDK", "+", False, "讓社群以 Python / JS 寫自己的模組並分享"),
 ]
 SIDEBAR = (  # (id, 標題, 圖示)；None = 分隔線。調校分類直接由 TWEAKS 產生
     [("dash", "總覽", "go-home-symbolic"), ("ext", "擴充功能", "application-x-addon-symbolic"), None]
     + [(f"tw{i}", name, icon) for i, (name, icon, _groups) in enumerate(TWEAKS)]
     + [("startup", "啟動應用程式", "system-run-symbolic"), None,
+       ("cleanup", "系統清理", "user-trash-symbolic"), ("hardware", "驅動與硬體", "computer-symbolic"),
+       ("backup", "備份與還原", "drive-harddisk-symbolic"), None,
        ("pf", "設定檔", "emblem-favorite-symbolic"), ("hist", "歷史", "document-open-recent-symbolic"), None,
        ("mods", "模組中心", "view-app-grid-symbolic")]
 )
@@ -550,6 +554,7 @@ class Tuneup(Adw.Application):
         self.key_rows = {}   # (schema, key) -> [(show, reset_button)]
         self.key_widgets = {}  # (schema, key) -> [列]
         self.loading = False
+        self.search_text = ""
 
     # ---------- 共用對話框 ----------
     def confirm(self, heading, body, action_label, on_yes, destructive=False):
@@ -1061,6 +1066,7 @@ class Tuneup(Adw.Application):
             if not rows:
                 continue
             self.page_words[nid] += [_(item[1]).lower() for item in items] + [item[3] for item in items]
+            self.page_keys.setdefault(nid, []).extend((item[2], item[3]) for item in items if store.has_key(item[2], item[3]))
             g = group(gt, *desc)
             for w in rows:
                 g.add(w)
@@ -1132,6 +1138,148 @@ class Tuneup(Adw.Application):
             g.add(row(name, command or path.name, tile(name, i), [btn("移除", on_click=lambda path=path, name=name: self.remove_autostart(path, name))], data=True))
         if not entries:
             g.add(row("沒有啟動應用程式", "這裡只列出你自己加入的項目，不含系統預設的"))
+        p.add(g)
+        return p
+
+    # ---------- 系統層級操作（需要確認，部分需要管理員權限） ----------
+    def run_system(self, heading, body, action_label, work, page, done_message):
+        """確認後在背景執行 work() -> (結束碼, 輸出)，結束時重新載入 page 並回報。"""
+        def finished(result, err):
+            code = -1 if err else result[0]
+            self.reload(page)
+            if code == 0:
+                self.toast(done_message)
+            elif code in system.PKEXEC_DISMISSED:
+                self.toast("已取消，沒有變更")
+            else:
+                self.toast_raw(_("無法套用：{error}").format(error=err or (result[1].strip().splitlines() or [str(code)])[-1]))
+        self.confirm(heading, body, action_label, lambda: (self.toast("執行中…"), in_background(work, finished)), destructive=True)
+
+    # ---------- 系統清理 ----------
+    CLEANUP = {  # id -> (標題, 說明)
+        "thumbnails": ("縮圖快取", "檔案管理員的預覽圖，之後會自動重新產生"),
+        "trash": ("垃圾桶", "永久刪除垃圾桶裡的所有檔案"),
+        "apt-cache": ("套件下載快取", "已下載的安裝檔；需要管理員權限"),
+        "journal": ("系統日誌", "只保留最近 14 天；需要管理員權限"),
+        "autoremove": ("不再需要的套件", "含舊核心與孤立的相依套件；需要管理員權限"),
+    }
+
+    def page_cleanup(self):
+        p = Adw.PreferencesPage()
+        g = group()
+        total = value("…")
+        g.add(row("可釋放的空間", "清理前會先確認；清掉的東西無法從歷史還原", None, [total]))
+        p.add(g)
+        items = group("項目")
+        loading = row("載入中…")
+        items.add(loading)
+        p.add(items)
+
+        def fill(found, err):
+            items.remove(loading)
+            if err:
+                items.add(row(_("無法讀取"), err, data=True))
+                return
+            total.set_label(system.human(sum(i["size"] or 0 for i in found)))
+            for i in found:
+                title, desc = self.CLEANUP[i["id"]]
+                amount = _("{n} 個套件").format(n=i["count"]) if i["size"] is None else system.human(i["size"])
+                detail = ", ".join(i["packages"][:6]) if i.get("packages") else None
+                b = btn("清理", on_click=lambda i=i, title=title, amount=amount, detail=detail: self.run_system(
+                    _("清理{name}？").format(name=_(title)), "\n".join(x for x in (amount, detail, _("這個動作無法還原。")) if x),
+                    "清理", lambda: system.clean(i["id"]), "cleanup", "已清理"))
+                b.set_sensitive(bool(i["size"] or i["count"]))
+                items.add(row(title, desc, None, [value(amount), b]))
+            self.mark_rows(items)
+        in_background(system.cleanup_items, fill)
+        return p
+
+    # ---------- 驅動與硬體 ----------
+    def page_hardware(self):
+        p = Adw.PreferencesPage()
+        g = group()
+        g.add(row(self.sys_name, self.sys_detail, Gtk.Image(icon_name="computer-symbolic"), data=True))
+        p.add(g)
+        battery, fw, drv = group("電池"), group("韌體"), group("驅動程式")
+        placeholders = []
+        for grp in (battery, fw, drv):
+            placeholders.append(row("載入中…"))
+            grp.add(placeholders[-1])
+            p.add(grp)
+
+        def fill(found, err):
+            for grp, r in zip((battery, fw, drv), placeholders):
+                grp.remove(r)
+            if err:
+                battery.add(row(_("無法讀取"), err, data=True))
+                return
+            for b in found["batteries"]:
+                full, design = (float(b.get(k, "0").split()[0].replace(",", ".")) for k in ("energy-full", "energy-full-design"))
+                health = f"{full / design * 100:.0f}%" if design else b.get("capacity", "")
+                name = " ".join(x for x in (b.get("vendor"), b.get("model")) if x) or _("電池")
+                detail = _("目前容量 {full}，設計容量 {design}").format(full=b.get("energy-full"), design=b.get("energy-full-design"))
+                if b.get("charge-cycles"):
+                    detail += " · " + _("充電 {n} 次").format(n=b["charge-cycles"])
+                battery.add(row(name, detail, Gtk.Image(icon_name="battery-symbolic"), [value(_("健康度 {p}").format(p=health))], data=True))
+            if not found["batteries"]:
+                battery.add(row("沒有偵測到電池", "這台電腦可能是桌上型主機"))
+            devices, updates = found["firmware"]
+            if updates:
+                fw.add(row(_("{n} 個裝置有韌體更新").format(n=updates), _("在終端機執行 fwupdmgr update 來安裝"), Gtk.Image(icon_name="software-update-available-symbolic"), data=True))
+            for d in devices:
+                fw.add(row(d["Name"], d.get("Vendor") or "", None, [value(str(d.get("Version", "")))], data=True))
+            if not devices:
+                fw.add(row("沒有可回報韌體的裝置", "fwupd 沒有找到支援的裝置"))
+            for name in found["drivers"]:
+                drv.add(row(name, _("ubuntu-drivers 建議安裝"), data=True))
+            if not found["drivers"]:
+                drv.add(row("沒有建議安裝的額外驅動程式", "目前的硬體不需要專有驅動"))
+            if shutil.which("software-properties-gtk"):
+                drv.add(row("管理驅動程式", "開啟系統的「額外驅動程式」", None,
+                            [btn("開啟", on_click=lambda: subprocess.Popen(["software-properties-gtk", "--open-tab=4"]))]))
+            self.mark_rows(p)
+        in_background(lambda: {"batteries": system.batteries(), "firmware": system.firmware(), "drivers": system.drivers()}, fill)
+        return p
+
+    # ---------- 備份與還原 ----------
+    def install_row(self, name, package, desc):
+        b = btn("安裝", on_click=lambda: self.run_system(
+            _("安裝 {name}？").format(name=name), _("會以管理員權限執行 apt-get install {package}。").format(package=package),
+            "安裝", lambda: system.run_root(["apt-get", "install", "-y", package]), "backup", "已安裝"))
+        return row(_("尚未安裝 {name}").format(name=name), _(desc), Gtk.Image(icon_name="dialog-information-symbolic"), [b], data=True)
+
+    def page_backup(self):
+        p = Adw.PreferencesPage()
+        used, free = system.root_usage()
+        tools = system.backup_tools()
+        g = group()
+        g.add(row("系統碟", _("已使用 {used}，剩餘 {free}").format(used=system.human(used), free=system.human(free)),
+                  Gtk.Image(icon_name="drive-harddisk-symbolic"), data=False))
+        p.add(g)
+
+        g = group("系統還原點", "備份系統檔案與已安裝的套件，不含個人檔案；系統更新出問題時可以退回")
+        if tools["timeshift"]:
+            g.add(row("建立還原點", "需要管理員權限，可能要幾分鐘", None, [btn("建立", "suggested-action", on_click=lambda: self.run_system(
+                "建立系統還原點？", _("Timeshift 會把目前的系統檔案複製到它設定的備份位置。"), "建立",
+                lambda: system.run_root(["timeshift", "--create", "--comments", "Tuneup", "--scripted"], timeout=3600), "backup", "已建立還原點"))]))
+            g.add(row("管理還原點", "列出、還原、刪除與排程，在 Timeshift 中進行", None,
+                      [btn("開啟", on_click=lambda: subprocess.Popen(["timeshift-launcher"]))]))
+        else:
+            g.add(self.install_row("Timeshift", "timeshift", "Tuneup 透過 Timeshift 建立系統還原點"))
+        p.add(g)
+
+        g = group("個人檔案備份", "備份家目錄裡的文件、照片等到外接硬碟或網路位置")
+        if tools["deja-dup"]:
+            g.add(row("立即備份", "使用「備份」目前的設定", None, [btn("備份", on_click=lambda: subprocess.Popen(["deja-dup", "--backup"]))]))
+            g.add(row("備份設定", "選擇資料夾、目的地與排程，或還原檔案", None, [btn("開啟", on_click=lambda: subprocess.Popen(["deja-dup"]))]))
+        else:
+            g.add(self.install_row("Déjà Dup", "deja-dup", "Tuneup 透過 Déjà Dup（備份）處理個人檔案"))
+        p.add(g)
+
+        g = group("完整映像檔", "整顆磁碟含開機區的備份。系統執行中無法做出可靠的映像，必須從隨身碟開機製作")
+        g.add(row("需要的空間", "外接硬碟至少要有這麼多可用空間", None, [value(system.human(used))]))
+        g.add(row("製作 Clonezilla 開機隨身碟", "官方說明與下載", None,
+                  [btn("開啟", on_click=lambda: Gtk.UriLauncher(uri="https://clonezilla.org/clonezilla-live.php").launch(self.win, None, None))]))
         p.add(g)
         return p
 
@@ -1346,6 +1494,11 @@ class Tuneup(Adw.Application):
         self.stack.set_visible_child_name(r.nid)
         self.content_page.set_title(r.ntitle)
         self.split.set_show_content(True)
+        if self.search_text:
+            for k in self.page_keys.get(r.nid, []):
+                if self.search_text in _(KEY_TITLES[k]).lower() or self.search_text in k[1]:
+                    self.key_widgets[k][0].grab_focus()  # 頁面會自動捲到取得焦點的列
+                    break
 
     def build_sidebar(self):
         lb = Gtk.ListBox()
@@ -1419,6 +1572,7 @@ class Tuneup(Adw.Application):
         """讀取系統目前的狀態並建立整個畫面；套用變更、重新整理與切換語言都走這裡。"""
         self.key_rows = {}
         self.key_widgets = {}
+        self.page_keys = {}
         self.page_words = {item[0]: [] for item in SIDEBAR if item}
         self.sys_name, self.sys_detail, self.shell_version = load_system()
         self.exts, self.ext_error = load_extensions()
@@ -1466,6 +1620,9 @@ class Tuneup(Adw.Application):
         for i, (_name, _icon, groups) in enumerate(TWEAKS):
             self.stack.add_named(self.tweak_page(f"tw{i}", groups), f"tw{i}")
         self.stack.add_named(self.page_startup(), "startup")
+        self.stack.add_named(self.page_cleanup(), "cleanup")
+        self.stack.add_named(self.page_hardware(), "hardware")
+        self.stack.add_named(self.page_backup(), "backup")
         self.stack.add_named(self.page_pf(), "pf")
         self.stack.add_named(self.page_hist(), "hist")
         self.stack.add_named(self.page_mods(), "mods")
@@ -1496,6 +1653,7 @@ class Tuneup(Adw.Application):
     def on_search(self, entry):
         """過濾側欄：頁面標題或頁面裡任何一個設定名稱符合就留下。"""
         q = entry.get_text().strip().lower()
+        self.search_text = q
 
         def match(r):
             if getattr(r, "nid", None) is None:
@@ -1514,14 +1672,16 @@ class Tuneup(Adw.Application):
         s = Gtk.Snapshot()
         pa.snapshot(s, w.get_width(), w.get_height())
         node = s.to_node()
-        tex = w.get_native().get_renderer().render_texture(node, None)
-        tex.save_to_png(f"{self.shot_dir}/{name}.png")
+        if node is None:  # 視窗還沒畫出來
+            return False
+        w.get_native().get_renderer().render_texture(node, None).save_to_png(f"{self.shot_dir}/{name}.png")
+        return True
 
     def shoot(self, i):
         ids = [x[0] for x in SIDEBAR if x]
         if i < len(ids):
             self.goto(ids[i])
-            GLib.timeout_add(400, lambda: (self.snap(f"{i:02d}-{ids[i]}"), GLib.timeout_add(80, self.shoot, i + 1), False)[2])
+            GLib.timeout_add(400, lambda: (GLib.timeout_add(80, self.shoot, i + (1 if self.snap(f"{i:02d}-{ids[i]}") else 0)), False)[1])
         else:
             self.quit()
         return False
