@@ -441,7 +441,7 @@ MODULES = [
     ("設定檔與歷史", "P", True, "打包、分享、還原整套設定"),
     ("啟動應用程式", "S", True, "登入時自動啟動的程式"),
     ("備份與還原", "B", True, "系統還原點、個人檔案備份、完整映像檔的引導"),
-    ("應用程式", "A", False, "統一管理 apt、Snap、Flatpak，附來源與大小"),
+    ("應用程式", "A", True, "列出與移除 Snap 和 apt 套件，並安裝系統更新"),
     ("系統清理", "C", True, "舊核心、快取、孤立套件與日誌，先預覽再清"),
     ("驅動與硬體", "D", True, "電池健康、韌體版本、建議的驅動程式"),
     ("外掛 SDK", "+", False, "讓社群以 Python / JS 寫自己的模組並分享"),
@@ -451,10 +451,11 @@ SIDEBAR = (  # (id, 標題, 圖示)；None = 分隔線。調校分類直接由 T
     + [entry for i, (name, icon, _groups) in enumerate(TWEAKS)
        for entry in [(f"tw{i}", name, icon)] + ([("audio", "音訊裝置", "audio-card-symbolic")] if name == "音效" else [])]
     + [("startup", "啟動應用程式", "system-run-symbolic"), None,
+       ("apps", "應用程式", "view-app-grid-symbolic"), ("updates", "系統更新", "software-update-available-symbolic"),
        ("cleanup", "系統清理", "user-trash-symbolic"), ("hardware", "驅動與硬體", "computer-symbolic"),
-       ("backup", "備份與還原", "drive-harddisk-symbolic"), None,
+       ("backup", "備份與還原", "drive-harddisk-symbolic"), ("logs", "錯誤記錄", "dialog-warning-symbolic"), None,
        ("pf", "設定檔", "emblem-favorite-symbolic"), ("hist", "歷史", "document-open-recent-symbolic"), None,
-       ("mods", "模組中心", "view-app-grid-symbolic")]
+       ("mods", "模組中心", "application-x-addon-symbolic")]
 )
 def all_items():
     return [item for _n, _i, groups in TWEAKS for g in groups for item in g[-1]]
@@ -1384,6 +1385,121 @@ class Tuneup(Adw.Application):
         p.add(g)
         return p
 
+    # ---------- 應用程式 ----------
+    NONINTERACTIVE = ["env", "DEBIAN_FRONTEND=noninteractive"]
+
+    def remove_apt(self, package):
+        """先模擬移除，把會連帶移除的套件列給使用者看；碰到系統必要套件就拒絕。"""
+        def planned(result, err):
+            removed, protected = result or ([], False)
+            if err or not removed:
+                return self.toast("沒有需要變更的項目")
+            if protected:
+                return self.toast_raw(_("不能移除 {name}：會連帶移除系統必要的套件").format(name=package))
+            listing = ", ".join(removed[:15]) + (" " + _("…以及另外 {n} 項").format(n=len(removed) - 15) if len(removed) > 15 else "")
+            self.run_system(_("移除 {name}？").format(name=package), listing + "\n" + _("這個動作無法還原。"), "移除",
+                            lambda: system.run_root(self.NONINTERACTIVE + ["apt-get", "-y", "remove", package]), "apps", "已移除")
+        in_background(lambda: system.removal_plan(package), planned)
+
+    def page_apps(self):
+        p = Adw.PreferencesPage()
+        g = group()
+        total = value("…")
+        g.add(row("已安裝的應用程式", "只列出你自己安裝的；被相依帶進來的套件不在這裡", None, [total]))
+        p.add(g)
+        snap_group, apt_group = group("Snap"), group("apt", "依佔用空間排序")
+        loading = [row("載入中…"), row("載入中…")]
+        snap_group.add(loading[0])
+        apt_group.add(loading[1])
+        p.add(snap_group)
+        p.add(apt_group)
+
+        def fill(found, err):
+            snap_group.remove(loading[0])
+            apt_group.remove(loading[1])
+            if err:
+                snap_group.add(row(_("無法讀取"), err, data=True))
+                return
+            snaps = [s for s in found["snaps"] if not s["system"]]
+            packages = sorted(found["apt"], key=lambda pkg: -pkg["size"])
+            total.set_label(_("{a} 個 Snap · {b} 個 apt 套件").format(a=len(snaps), b=len(packages)))
+            for i, s in enumerate(sorted(snaps, key=lambda s: -s["size"])):
+                b = btn("移除", on_click=lambda s=s: self.run_system(
+                    _("移除 {name}？").format(name=s["name"]), _("Snap 會保留一份資料快照 31 天，之後自動刪除。"), "移除",
+                    lambda: system.run(["snap", "remove", s["name"]], timeout=600), "apps", "已移除"))
+                snap_group.add(row(s["name"], f"{s['version']} · {s['publisher']}", tile(s["name"], i), [value(system.human(s["size"])), b], data=True))
+            if not snaps:
+                snap_group.add(row("沒有 Snap 應用程式", "執行環境、主題這類共用元件不列出"))
+            for i, pkg in enumerate(packages):
+                b = btn("移除", on_click=lambda pkg=pkg: self.remove_apt(pkg["name"]))
+                apt_group.add(row(pkg["name"], pkg["summary"] or pkg["version"], tile(pkg["name"], i), [value(system.human(pkg["size"])), b], data=True))
+            if not packages:
+                apt_group.add(row("沒有手動安裝的 apt 套件", "apt-mark showmanual 沒有回報任何套件"))
+            self.page_words["apps"] = [s["name"].lower() for s in snaps] + [pkg["name"].lower() for pkg in packages]
+            self.mark_rows(p)
+        in_background(lambda: {"snaps": system.snaps(), "apt": system.apt_manual()}, fill)
+        return p
+
+    # ---------- 系統更新 ----------
+    def page_updates(self):
+        p = Adw.PreferencesPage()
+        g = group()
+        summary = row("系統更新", "載入中…", Gtk.Image(icon_name="software-update-available-symbolic"))
+        upgrade = btn("全部更新", "suggested-action", on_click=lambda: self.run_system(
+            "安裝所有更新？", _("會以管理員權限執行 apt-get upgrade，可能需要幾分鐘。套件更新無法從歷史還原。"), "更新",
+            lambda: system.run_root(self.NONINTERACTIVE + ["apt-get", "-y", "upgrade"], timeout=3600), "updates", "已更新"))
+        upgrade.set_sensitive(False)
+        summary.add_suffix(upgrade)
+        g.add(summary)
+        g.add(row("重新檢查", "向軟體來源取得最新的套件清單；需要管理員權限", None, [btn("檢查", on_click=lambda: self.run_system(
+            "重新檢查更新？", _("會以管理員權限執行 apt-get update。"), "檢查", lambda: system.run_root(["apt-get", "update"]), "updates", "已取得最新清單"))]))
+        if shutil.which("snap"):
+            g.add(row("Snap 應用程式", "snapd 平常會自動更新；也可以現在就更新", None, [btn("立即更新", on_click=lambda: self.run_system(
+                "更新所有 Snap？", _("執行 snap refresh，系統可能會要求授權。"), "更新", lambda: system.run(["snap", "refresh"], timeout=1800), "updates", "已更新"))]))
+        p.add(g)
+        pending = group("可更新的套件")
+        loading = row("載入中…")
+        pending.add(loading)
+        p.add(pending)
+
+        def fill(found, err):
+            pending.remove(loading)
+            found = found or []
+            summary.set_subtitle(esc(_("{n} 個套件可更新").format(n=len(found)) if found else _("系統是最新的")))
+            upgrade.set_sensitive(bool(found))
+            for pkg in found:
+                pending.add(row(pkg["name"], f"{pkg['old']} → {pkg['new']}", data=True))
+            if not found:
+                pending.add(row("沒有可更新的套件", "這是上次檢查時的結果；按「重新檢查」取得最新清單", Gtk.Image(icon_name="emblem-ok-symbolic")))
+            self.mark_rows(p)
+        in_background(system.upgradable, fill)
+        return p
+
+    # ---------- 錯誤記錄 ----------
+    def page_logs(self):
+        p = Adw.PreferencesPage()
+        g = group()
+        count = value("…")
+        g.add(row("本次開機的錯誤", "相同來源與內容的訊息會合併成一列", None, [count]))
+        p.add(g)
+        entries = group("記錄", "來自系統日誌（journalctl -b -p err）")
+        loading = row("載入中…")
+        entries.add(loading)
+        p.add(entries)
+
+        def fill(found, err):
+            entries.remove(loading)
+            found = found or []
+            count.set_label(_("{n} 種").format(n=len(found)))
+            for item in found[:80]:
+                detail = f"{item['source']} · " + _("{n} 次，最近一次在 {time}").format(n=item["count"], time=when(item["time"]))
+                entries.add(row(item["message"].strip().split("\n")[0] or "?", detail, data=True))
+            if not found:
+                entries.add(row("沒有錯誤記錄", "這次開機以來系統沒有記下任何錯誤", Gtk.Image(icon_name="emblem-ok-symbolic")))
+            self.mark_rows(p)
+        in_background(system.boot_errors, fill)
+        return p
+
     # ---------- 設定檔 ----------
     def profile_diff(self, profile):
         names = {e["uuid"]: e["name"] for e in self.exts}
@@ -1405,6 +1521,15 @@ class Tuneup(Adw.Application):
             lines.append(_("…以及另外 {n} 項").format(n=len(changes) - 12))
         self.confirm(_("套用設定檔「{name}」？").format(name=name), "\n".join(lines), "套用",
                      lambda: self.commit("profile", changes, "已套用，可在「歷史」還原", label=name, page="pf"))
+
+    def rename_profile(self, name):
+        def renamed(new):
+            try:
+                store.rename_profile(name, new)
+            except (ValueError, GLib.Error) as err:
+                return self.toast_raw(_("無法套用：{error}").format(error=str(err)))
+            self.reload("pf")
+        self.prompt("重新命名設定檔", "新名稱", "重新命名", renamed)
 
     def export_profile(self, name):
         profile = self.find_profile(name)
@@ -1468,7 +1593,8 @@ class Tuneup(Adw.Application):
                 r.add_suffix(btn("套用", on_click=lambda name=name: self.apply_profile(name)))
             else:
                 r.add_suffix(chip("使用中", "success"))
-            r.add_suffix(self.param_menu([("更新為目前狀態", "pf-update", name), ("匯出", "pf-export", name), ("刪除", "pf-delete", name)]))
+            r.add_suffix(self.param_menu([("更新為目前狀態", "pf-update", name), ("重新命名", "pf-rename", name),
+                                          ("匯出", "pf-export", name), ("刪除", "pf-delete", name)]))
             g.add(r)
         if not self.profiles:
             g.add(row("尚無設定檔", "建立後會顯示在這裡", Gtk.Image(icon_name="emblem-favorite-symbolic")))
@@ -1650,7 +1776,7 @@ class Tuneup(Adw.Application):
             a.connect("activate", lambda _a, _p, cb=cb: cb())
             self.add_action(a)
         with_name = {
-            "pf-update": lambda name: self.create_profile(name), "pf-export": self.export_profile,
+            "pf-update": lambda name: self.create_profile(name), "pf-export": self.export_profile, "pf-rename": self.rename_profile,
             "pf-delete": self.delete_profile, "restore-to": self.restore_entry,
         }
         for name, cb in with_name.items():
@@ -1734,6 +1860,9 @@ class Tuneup(Adw.Application):
             self.stack.add_named(self.tweak_page(f"tw{i}", groups), f"tw{i}")
         self.stack.add_named(self.page_audio(), "audio")
         self.stack.add_named(self.page_startup(), "startup")
+        self.stack.add_named(self.page_apps(), "apps")
+        self.stack.add_named(self.page_updates(), "updates")
+        self.stack.add_named(self.page_logs(), "logs")
         self.stack.add_named(self.page_cleanup(), "cleanup")
         self.stack.add_named(self.page_hardware(), "hardware")
         self.stack.add_named(self.page_backup(), "backup")
