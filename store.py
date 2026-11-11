@@ -8,6 +8,8 @@ from pathlib import Path
 
 from gi.repository import Gio, GLib
 
+import audio
+
 DATA_DIR = Path(GLib.get_user_data_dir()) / "tuneup"
 HISTORY_FILE = DATA_DIR / "history.json"
 PROFILE_DIR = DATA_DIR / "profiles"
@@ -59,6 +61,7 @@ def shell_call(method, args=None, iface=SHELL_BUS[0], timeout=3000):
 # 一筆變更是 dict：
 #   {"type": "gsettings", "schema", "key", "old", "new"}   old/new 是 GVariant 文字，None 代表預設值
 #   {"type": "extension", "uuid", "name", "old", "new"}    old/new 是 bool（是否啟用）
+#   {"type": "audio", ...}                                 見 audio.py
 
 def gsettings_change(schema, key, new_text):
     return {"type": "gsettings", "schema": schema, "key": key, "old": user_text(schema, key), "new": new_text}
@@ -69,6 +72,9 @@ def extension_change(uuid, name, old, new):
 
 
 def _write(change, target):
+    if change["type"] == "audio":
+        audio.write(change, target)
+        return
     if change["type"] == "extension":
         shell_call("EnableExtension" if target else "DisableExtension", GLib.Variant("(s)", (change["uuid"],)))
         return
@@ -131,7 +137,7 @@ def restore_to(entry_id):
     # 同一個設定被改過多次時，只保留「現在的值 → 最早的舊值」
     merged = {}
     for c in changes:
-        ident = (c["type"], c.get("schema"), c.get("key"), c.get("uuid"))
+        ident = (c["type"], c.get("schema"), c.get("key"), c.get("uuid"), c.get("what"), c.get("name"))
         if ident in merged:
             merged[ident]["new"] = c["new"]
         else:
