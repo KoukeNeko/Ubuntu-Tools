@@ -267,7 +267,12 @@ TITLEBAR_ACTIONS = [("最大化", "toggle-maximize"), ("水平最大化", "toggl
 ACCEL = [("預設", "default"), ("平坦", "flat"), ("自適應", "adaptive")]
 IDLE_ACTIONS = [("暫停", "suspend"), ("休眠", "hibernate"), ("關機", "shutdown"), ("登出", "logout"), ("關閉螢幕", "blank"), ("不執行動作", "nothing")]
 
-TWEAKS = [  # (分類, 圖示, [(群組, [項目])])
+# 某個設定只在另一個設定符合條件時才有作用：{被控制的 key: (控制它的 key, 條件)}
+DEPENDS = {
+    (IF, "font-rgba-order"): ((IF, "font-antialiasing"), lambda v: v == "rgba"),
+}
+
+TWEAKS = [  # (分類, 圖示, [(群組, [項目])])；群組可以多帶一個說明：(群組, 說明, [項目])
     ("外觀", "applications-graphics-symbolic", [
         ("樣式", [
             en("色彩模式", IF, "color-scheme", [("預設", "default"), ("深色", "prefer-dark"), ("淺色", "prefer-light")]),
@@ -293,7 +298,7 @@ TWEAKS = [  # (分類, 圖示, [(群組, [項目])])
             ("font", "等寬字型", IF, "monospace-font-name", None),
             ("font", "舊版視窗標題字型", WM, "titlebar-font", None),
         ]),
-        ("算繪", [
+        ("算繪", "OLED 或次像素不是直條排列的螢幕（例如 QD-OLED），反鋸齒建議選「標準（灰階）」，否則文字邊緣會有彩邊", [
             en("微調", IF, "font-hinting", [("完整", "full"), ("中等", "medium"), ("輕微", "slight"), ("無", "none")]),
             en("反鋸齒", IF, "font-antialiasing", [("次像素（LCD 螢幕）", "rgba"), ("標準（灰階）", "grayscale"), ("無", "none")]),
             en("次像素順序", IF, "font-rgba-order", [("RGB", "rgb"), ("BGR", "bgr"), ("垂直 RGB", "vrgb"), ("垂直 BGR", "vbgr")]),
@@ -445,12 +450,14 @@ SIDEBAR = (  # (id, 標題, 圖示)；None = 分隔線。調校分類直接由 T
        ("pf", "設定檔", "emblem-favorite-symbolic"), ("hist", "歷史", "document-open-recent-symbolic"), None,
        ("mods", "模組中心", "view-app-grid-symbolic")]
 )
-ALL_KEYS = list(dict.fromkeys((item[2], item[3]) for _n, _i, groups in TWEAKS for _g, items in groups for item in items))
+def all_items():
+    return [item for _n, _i, groups in TWEAKS for g in groups for item in g[-1]]
+
+
+ALL_KEYS = list(dict.fromkeys((item[2], item[3]) for item in all_items()))
 KEY_TITLES = {}
-for _n, _i, _groups in TWEAKS:
-    for _g, _items in _groups:
-        for _item in _items:
-            KEY_TITLES.setdefault((_item[2], _item[3]), _item[1])
+for _item in all_items():
+    KEY_TITLES.setdefault((_item[2], _item[3]), _item[1])
 KEY_TITLES[store.MASTER] = "全部擴充功能"
 
 
@@ -541,6 +548,7 @@ class Tuneup(Adw.Application):
         load_lang(self.lang_pref)
         self.pending = {}    # (schema, key) -> 要寫入的值，或 RESET
         self.key_rows = {}   # (schema, key) -> [(show, reset_button)]
+        self.key_widgets = {}  # (schema, key) -> [列]
         self.loading = False
 
     # ---------- 共用對話框 ----------
@@ -617,6 +625,7 @@ class Tuneup(Adw.Application):
         else:
             self.pending[k] = new
         self.refresh_key(k)
+        self.update_depends()
         self.update_banner()
 
     def refresh_key(self, k):
@@ -627,6 +636,13 @@ class Tuneup(Adw.Application):
             show(self.shown_value(*k))
             reset.set_visible(customized)
         self.loading = False
+
+    def update_depends(self):
+        """依 DEPENDS 停用目前沒有作用的列。"""
+        for k, (controller, condition) in DEPENDS.items():
+            if store.has_key(*controller):
+                for w in self.key_widgets.get(k, []):
+                    w.set_sensitive(condition(self.shown_value(*controller)))
 
     def update_banner(self):
         n = len(self.pending)
@@ -660,7 +676,7 @@ class Tuneup(Adw.Application):
         """各分類中，使用者改過（與預設值不同）的調校項數量。"""
         counts = []
         for name, _icon, groups in TWEAKS:
-            keys = {(item[2], item[3]) for _g, items in groups for item in items}
+            keys = {(item[2], item[3]) for g in groups for item in g[-1]}
             counts.append((name, sum(1 for s, k in keys if store.has_key(s, k) and store.settings(s).get_user_value(k) is not None)))
         return counts
 
@@ -1033,18 +1049,19 @@ class Tuneup(Adw.Application):
         reset.set_tooltip_text(_("還原為預設值"))
         w.add_suffix(reset)
         self.key_rows.setdefault(k, []).append((show, reset))
+        self.key_widgets.setdefault(k, []).append(w)
         staged = self.pending.get(k)
         reset.set_visible(staged is not RESET and (staged is not None or store.settings(schema).get_user_value(key) is not None))
         return w
 
     def tweak_page(self, nid, groups):
         p = Adw.PreferencesPage()
-        for gt, items in groups:
+        for gt, *desc, items in groups:
             rows = [w for w in (self.tweak_row(item) for item in items) if w]
             if not rows:
                 continue
             self.page_words[nid] += [_(item[1]).lower() for item in items] + [item[3] for item in items]
-            g = group(gt)
+            g = group(gt, *desc)
             for w in rows:
                 g.add(w)
             p.add(g)
@@ -1401,6 +1418,7 @@ class Tuneup(Adw.Application):
     def build_ui(self, page="dash"):
         """讀取系統目前的狀態並建立整個畫面；套用變更、重新整理與切換語言都走這裡。"""
         self.key_rows = {}
+        self.key_widgets = {}
         self.page_words = {item[0]: [] for item in SIDEBAR if item}
         self.sys_name, self.sys_detail, self.shell_version = load_system()
         self.exts, self.ext_error = load_extensions()
@@ -1458,6 +1476,7 @@ class Tuneup(Adw.Application):
         self.mark_rows(split)
         self.toasts.set_child(split)
         self.win.set_content(self.toasts)
+        self.update_depends()
         self.update_banner()
         lb.select_row(self.rows.get(page) or self.rows["dash"])
 

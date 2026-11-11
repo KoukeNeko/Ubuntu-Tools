@@ -358,5 +358,6 @@
   "在這之後的所有變更都會被反轉。這次還原也會記入歷史，可以再退回。": "Every change after this point will be reversed. The restore is recorded too, so you can undo it.",
   "還原": "Restore",
   "還原這次變更": "Undo This Change",
-  "還原到此時間點": "Restore to This Point"
+  "還原到此時間點": "Restore to This Point",
+  "OLED 或次像素不是直條排列的螢幕（例如 QD-OLED），反鋸齒建議選「標準（灰階）」，否則文字邊緣會有彩邊": "On OLED or other displays without a striped subpixel layout (such as QD-OLED), choose “Standard (grayscale)” to avoid color fringing on text"
 }
