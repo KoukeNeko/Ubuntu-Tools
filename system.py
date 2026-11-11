@@ -141,3 +141,94 @@ def backup_tools():
 def root_usage():
     usage = shutil.disk_usage("/")
     return usage.used, usage.free
+
+
+# ---------- 應用程式 ----------
+SNAP_DIR = Path("/var/lib/snapd/snaps")
+SNAP_DESKTOP_DIR = Path("/var/lib/snapd/desktop/applications")
+SNAP_SYSTEM_NOTES = ("base", "snapd", "core", "gadget", "kernel")
+# 移除這些套件會讓系統無法開機或登入；模擬結果只要碰到就拒絕
+PROTECTED_PREFIXES = ("ubuntu-desktop", "ubuntu-minimal", "ubuntu-standard", "gnome-shell", "gdm3", "systemd", "linux-image",
+                      "linux-generic", "grub", "sudo", "apt", "dpkg", "libc6", "network-manager", "python3-minimal", "snapd")
+
+
+def parse_snap_list(text):
+    """snap list 的輸出 -> [{"name", "version", "rev", "publisher", "system"}]"""
+    snaps = []
+    for line in text.splitlines()[1:]:
+        cols = line.split()
+        if len(cols) >= 6:
+            snaps.append({"name": cols[0], "version": cols[1], "rev": cols[2], "publisher": cols[4].rstrip("*✓"),
+                          "system": any(note in SNAP_SYSTEM_NOTES for note in cols[5].split(","))})
+    return snaps
+
+
+def snaps():
+    found = parse_snap_list(run(["snap", "list"])[1])
+    for s in found:
+        # 沒有桌面啟動項目的是執行環境或主題這類共用元件，移除會弄壞其他 Snap
+        if not any(SNAP_DESKTOP_DIR.glob(f"{s['name']}_*.desktop")):
+            s["system"] = True
+        try:
+            s["size"] = (SNAP_DIR / f"{s['name']}_{s['rev']}.snap").stat().st_size
+        except OSError:
+            s["size"] = 0
+    return found
+
+
+def parse_dpkg(text):
+    """dpkg-query 以 tab 分隔的輸出 -> [{"name", "size", "version", "summary"}]，size 是位元組"""
+    packages = []
+    for line in text.splitlines():
+        cols = line.split("\t")
+        if len(cols) == 4 and cols[1].isdigit():
+            packages.append({"name": cols[0], "size": int(cols[1]) * 1024, "version": cols[2], "summary": cols[3]})
+    return packages
+
+
+def apt_manual():
+    """使用者手動安裝的 apt 套件（不含被相依帶進來的）。"""
+    names = run(["apt-mark", "showmanual"])[1].split()
+    if not names:
+        return []
+    return parse_dpkg(run(["dpkg-query", "-W", "-f=${Package}\t${Installed-Size}\t${Version}\t${binary:Summary}\n", *names])[1])
+
+
+def removal_plan(package):
+    """模擬移除，回傳 (會被移除的套件, 是否碰到系統必要套件)。"""
+    removed = parse_autoremove(run(["apt-get", "-s", "remove", package])[1])
+    return removed, any(name.startswith(PROTECTED_PREFIXES) for name in removed)
+
+
+# ---------- 系統更新 ----------
+def parse_upgradable(text):
+    """apt list --upgradable 的輸出 -> [{"name", "new", "old"}]"""
+    return [{"name": m[0], "new": m[1], "old": m[2]}
+            for m in re.findall(r"^([^/\s]+)/\S+ (\S+) \S+ \[upgradable from: ([^\]]+)\]", text, re.M)]
+
+
+def upgradable():
+    return parse_upgradable(run(["apt", "list", "--upgradable"])[1])
+
+
+# ---------- 錯誤記錄 ----------
+def parse_journal(text):
+    """journalctl -o json 的輸出 -> 依來源與訊息合併後的清單，最近的在前。"""
+    merged = {}
+    for line in text.splitlines():
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        message = entry.get("MESSAGE")
+        if not isinstance(message, str):  # 二進位訊息在 JSON 裡是數字陣列
+            continue
+        source = entry.get("SYSLOG_IDENTIFIER") or entry.get("_COMM") or "?"
+        item = merged.setdefault((source, message), {"source": source, "message": message, "count": 0, "time": 0})
+        item["count"] += 1
+        item["time"] = max(item["time"], int(entry.get("__REALTIME_TIMESTAMP", 0)) // 1_000_000)
+    return sorted(merged.values(), key=lambda i: i["time"], reverse=True)
+
+
+def boot_errors(limit=500):
+    return parse_journal(run(["journalctl", "-b", "-p", "err", "-o", "json", "--no-pager", "-n", str(limit)])[1])

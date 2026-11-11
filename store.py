@@ -216,3 +216,12 @@ def load_profiles():
 def delete_profile(name):
     """移到垃圾桶，而不是直接刪除。"""
     Gio.File.new_for_path(str(_profile_path(name))).trash(None)
+
+
+def rename_profile(old, new):
+    """以新名稱另存，再把舊檔移到垃圾桶。新名稱已存在時丟出 ValueError。"""
+    if _profile_path(new).exists():
+        raise ValueError(f"profile already exists: {new}")
+    profile = next(p for p in load_profiles() if p["name"] == old)
+    save_profile(dict(profile, name=new))
+    delete_profile(old)

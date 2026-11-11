@@ -6,6 +6,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 os.environ["GSETTINGS_BACKEND"] = "memory"
 os.environ["XDG_DATA_HOME"] = tempfile.mkdtemp(prefix="tuneup-test-")
@@ -27,6 +28,8 @@ class StoreTest(unittest.TestCase):
             store.settings(IF).reset(key)
         if store.HISTORY_FILE.exists():
             store.HISTORY_FILE.unlink()
+        for path in store.PROFILE_DIR.glob("*.json"):
+            path.unlink()
 
     def get(self, key):
         return store.settings(IF).get_value(key).unpack()
@@ -85,6 +88,16 @@ class StoreTest(unittest.TestCase):
     def test_save_and_load_profiles(self):
         store.save_profile(store.capture("遊戲 / test", [], {"a@b": True}))
         self.assertEqual([p["name"] for p in store.load_profiles()], ["遊戲 / test"])
+
+    def test_rename_profile(self):
+        store.save_profile(store.capture("a", [], {}))
+        store.save_profile(store.capture("b", [], {}))
+        with self.assertRaises(ValueError):
+            store.rename_profile("a", "b")
+        # 暫存資料夾不支援垃圾桶，測試時改成直接刪除
+        with mock.patch.object(store, "delete_profile", lambda name: store._profile_path(name).unlink()):
+            store.rename_profile("a", "c")
+        self.assertEqual(sorted(p["name"] for p in store.load_profiles()), ["b", "c"])
 
 
 if __name__ == "__main__":
