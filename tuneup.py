@@ -43,16 +43,28 @@ def system_lang():
     return "zh_TW" if env.lower().startswith("zh") else "en"
 
 
-def read_pref():
+def load_conf():
+    """使用者偏好（語言、市集的檢視方式）；檔案不存在或損毀時是空的。"""
     try:
-        return json.loads(CONF.read_text()).get("lang", "system")
+        conf = json.loads(CONF.read_text())
     except (OSError, ValueError):
-        return "system"
+        return {}
+    return conf if isinstance(conf, dict) else {}
+
+
+def save_conf(key, val):
+    conf = load_conf()
+    conf[key] = val
+    CONF.parent.mkdir(parents=True, exist_ok=True)
+    CONF.write_text(json.dumps(conf))
+
+
+def read_pref():
+    return load_conf().get("lang", "system")
 
 
 def save_pref(code):
-    CONF.parent.mkdir(parents=True, exist_ok=True)
-    CONF.write_text(json.dumps({"lang": code}))
+    save_conf("lang", code)
 
 
 def load_lang(pref):
@@ -101,6 +113,7 @@ row.two-line box.header{min-height:64px}
 .diff{font-family:monospace;font-size:small;padding:12px}
 .navigation-sidebar row.sep{background:none;min-height:0;padding:0}
 .thumb{border-radius:8px}
+.market-card{padding:6px}
 .swatch{min-width:24px;min-height:24px;border-radius:99px;padding:0;border:2px solid transparent}
 .swatch:checked{border-color:@window_fg_color}
 """
@@ -728,10 +741,15 @@ class Tuneup(Adw.Application):
         return p
 
     # ---------- 擴充功能 ----------
-    def sub_page(self, title, content):
+    def sub_page(self, title, content, title_widget=None, end_widget=None):
         tv = Adw.ToolbarView()
-        # 外層已經有視窗按鈕，子頁面的標題列只留返回鍵與標題
-        tv.add_top_bar(Adw.HeaderBar(show_start_title_buttons=False, show_end_title_buttons=False))
+        # 外層已經有視窗按鈕，子頁面的標題列只留返回鍵與標題（或搜尋框）
+        header = Adw.HeaderBar(show_start_title_buttons=False, show_end_title_buttons=False)
+        if title_widget:
+            header.set_title_widget(title_widget)
+        if end_widget:
+            header.pack_end(end_widget)
+        tv.add_top_bar(header)
         tv.set_content(content)
         self.mark_rows(tv)
         return Adw.NavigationPage(title=title, child=tv)
@@ -875,61 +893,111 @@ class Tuneup(Adw.Application):
             return Adw.Clamp(maximum_size=width, tightening_threshold=width, width_request=width, child=pic, valign=Gtk.Align.CENTER)
         return pic
 
-    def market_page(self, nav, title, source, sorts, search, make_row):
-        """市集清單頁：搜尋、排序、載入更多。search(關鍵字, 排序索引, 頁碼) -> (項目, 是否還有下一頁)。"""
-        page = Adw.PreferencesPage()
-        g = group()
-        entry = Adw.EntryRow(title=_("搜尋 {source}").format(source=source), show_apply_button=True)
-        g.add(entry)
-        sort = Adw.ComboRow(title=_m("排序"), model=Gtk.StringList.new([_(x) for x in sorts]))
-        g.add(sort)
-        page.add(g)
-        results = group("結果")
-        page.add(results)
-        state = {"page": 0, "rows": [], "count": 0, "serial": 0}
+    def market_page(self, nav, title, source, sorts, search, describe, empty=("找不到符合的項目", "換個關鍵字試試"), grid=True):
+        """市集清單頁：搜尋、排序、格狀或清單檢視、載入更多。
 
-        def clear():
+        search(關鍵字, 排序索引, 頁碼) -> (項目, 是否還有下一頁)
+        describe(項目) -> {"title", "sub", "detail", "image", "installed", "open"}
+        """
+        page = Adw.PreferencesPage()
+        # 搜尋、排序與檢視方式放在子頁面的標題列，和 GNOME 其他應用程式的做法一致
+        entry = Gtk.SearchEntry(placeholder_text=_("搜尋 {source}").format(source=source), search_delay=400, hexpand=True)
+        sort = Gtk.DropDown(model=Gtk.StringList.new([_(x) for x in sorts]), tooltip_text=_("排序"), visible=bool(sorts))
+        view = Gtk.Button(visible=grid)  # 沒有預覽圖的內容（套件搜尋）只用清單，格狀只會是一片空白卡片
+        tools = Gtk.Box(spacing=6)
+        tools.append(sort)
+        tools.append(view)
+        results, footer = group(), group()
+        flow = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, homogeneous=True, min_children_per_line=2, max_children_per_line=3,
+                           column_spacing=12, row_spacing=12, activate_on_single_click=True)
+        results.add(flow)
+        page.add(results)
+        page.add(footer)
+        state = {"page": 0, "items": [], "rows": [], "foot": None, "serial": 0, "grid": grid and load_conf().get("market_view", "grid") == "grid"}
+        flow.connect("child-activated", lambda _f, child: describe(state["items"][child.get_index()])["open"]())
+
+        def set_foot(r):
+            if state["foot"]:
+                footer.remove(state["foot"])
+            state["foot"] = r
+            if r:
+                footer.add(r)
+
+        def render(items, start):
+            for index, item in enumerate(items, start):
+                d = describe(item)
+                if state["grid"]:
+                    card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+                    card.add_css_class("card")
+                    card.add_css_class("market-card")
+                    if d["image"]:
+                        card.append(self.remote_picture(d["image"], -1, 110))
+                    else:
+                        blank = Gtk.CenterBox(height_request=110)
+                        blank.set_center_widget(tile(d["title"], index))
+                        card.append(blank)
+                    name = Gtk.Label(label=d["title"], xalign=0, ellipsize=Pango.EllipsizeMode.END)
+                    name.add_css_class("heading")
+                    card.append(name)
+                    note = Gtk.Label(label=_("已安裝") if d["installed"] else d["detail"] or d["sub"], xalign=0, ellipsize=Pango.EllipsizeMode.END)
+                    note.add_css_class("caption")
+                    note.add_css_class("success" if d["installed"] else "dim-label")
+                    card.append(note)
+                    flow.append(card)
+                else:
+                    prefix = self.remote_picture(d["image"], 64, 44) if d["image"] else tile(d["title"], index)
+                    r = row(d["title"], d["sub"], prefix, [chip("已安裝", "success") if d["installed"] else value(d["detail"] or ""), self.next_icon()], data=True)
+                    r.set_activatable(True)
+                    r.connect("activated", lambda _r, d=d: d["open"]())
+                    state["rows"].append(r)
+                    results.add(r)
+            self.mark_rows(results)
+
+        def redraw():
+            """依目前的檢視方式，用已經載入的項目重畫，不重新連網。"""
             for r in state["rows"]:
                 results.remove(r)
             state["rows"] = []
+            flow.remove_all()
+            flow.set_visible(state["grid"])
+            view.set_icon_name("view-list-symbolic" if state["grid"] else "view-grid-symbolic")
+            view.set_tooltip_text(_("改用清單檢視") if state["grid"] else _("改用格狀檢視"))
+            render(state["items"], 0)
 
-        def add(r):
-            state["rows"].append(r)
-            results.add(r)
+        def switch_view():
+            state["grid"] = not state["grid"]
+            save_conf("market_view", "grid" if state["grid"] else "list")
+            redraw()
 
         def load(reset):
             if reset:
-                clear()
-                state["page"], state["count"] = 0, 0
-            elif state["rows"]:
-                results.remove(state["rows"].pop())  # 拿掉「載入更多」
-            add(row("載入中…"))
+                state["page"], state["items"] = 0, []
+                redraw()
+            set_foot(row("載入中…"))
             state["serial"] += 1
             serial, text, order, number = state["serial"], entry.get_text().strip(), sort.get_selected(), state["page"]
 
             def loaded(found, err):
                 if serial != state["serial"]:
                     return  # 使用者已經發出新的搜尋，丟掉舊結果
-                results.remove(state["rows"].pop())
                 items, more = found or ([], False)
                 if err:
-                    add(row(_("無法連線到 {source}").format(source=source), err, Gtk.Image(icon_name="network-offline-symbolic"), data=True))
-                elif not items and not state["count"]:
-                    add(row("找不到符合的項目", "換個關鍵字試試"))
-                for item in items:
-                    add(make_row(item, state["count"]))
-                    state["count"] += 1
-                if more:
-                    r = row("載入更多", None, None, [btn("載入", on_click=lambda: (state.__setitem__("page", state["page"] + 1), load(False)))])
-                    add(r)
-                self.mark_rows(results)
+                    set_foot(row(_("無法連線到 {source}").format(source=source), err, Gtk.Image(icon_name="network-offline-symbolic"), data=True))
+                elif not items and not state["items"]:
+                    set_foot(row(*empty))
+                elif more:
+                    set_foot(row("載入更多", None, None, [btn("載入", on_click=lambda: (state.__setitem__("page", state["page"] + 1), load(False)))]))
+                else:
+                    set_foot(None)
+                render(items, len(state["items"]))
+                state["items"] += items
             in_background(lambda: search(text, order, number), loaded)
 
-        entry.connect("apply", lambda *_a: load(True))
-        entry.connect("entry-activated", lambda *_a: load(True))
+        view.connect("clicked", lambda *_a: switch_view())
+        entry.connect("search-changed", lambda *_a: load(True))
         sort.connect("notify::selected", lambda *_a: load(True))
         load(True)
-        nav.push(self.sub_page(title, page))
+        nav.push(self.sub_page(title, page, Adw.Clamp(maximum_size=360, child=entry), tools))
 
     def open_uri(self, uri):
         Gtk.UriLauncher(uri=uri).launch(self.win, None, None)
@@ -950,13 +1018,10 @@ class Tuneup(Adw.Application):
             items, pages = market.search_extensions(self.shell_version, text, market.EGO_SORTS[order], number + 1)
             return items, number + 1 < pages
 
-        def make_row(item, index):
-            r = row(item["name"], item["description"].split("\n")[0], tile(item["name"], index),
-                    ([chip("已安裝", "success")] if item["uuid"] in installed else [value(f"{item['downloads']:,}")]) + [self.next_icon()], data=True)
-            r.set_activatable(True)
-            r.connect("activated", lambda *_a: self.explore_detail(item, index, item["uuid"] in installed))
-            return r
-        self.market_page(self.ext_nav, _("探索擴充功能"), "extensions.gnome.org", ["熱門", "最新", "下載次數", "名稱"], search, make_row)
+        def describe(item):
+            return {"title": item["name"], "sub": item["description"].split("\n")[0], "detail": f"{item['downloads']:,}", "image": item["screenshot"],
+                    "installed": item["uuid"] in installed, "open": lambda: self.explore_detail(item, 0, item["uuid"] in installed)}
+        self.market_page(self.ext_nav, _("探索擴充功能"), "extensions.gnome.org", ["熱門", "最新", "下載次數", "名稱"], search, describe)
 
     def explore_detail(self, item, index, installed):
         pg = Adw.PreferencesPage()
@@ -1232,12 +1297,12 @@ class Tuneup(Adw.Application):
             items, total = market.search_themes(kind, text, market.OCS_SORTS[order], number)
             return items, (number + 1) * market.PAGE_SIZE < total
 
-        def make_row(item, index):
-            r = row(item["name"], item["author"], self.remote_picture(item["preview"], 64, 44), [value(f"{item['downloads']:,}"), self.next_icon()], data=True)
-            r.set_activatable(True)
-            r.connect("activated", lambda *_a: self.theme_detail(kind, item, index))
-            return r
-        self.market_page(self.theme_nav, _(self.THEME_TITLES[kind]), "gnome-look.org", ["下載次數", "最新", "評分", "名稱"], search, make_row)
+        local = {t["name"] for t in market.installed_themes(kind)}
+
+        def describe(item):
+            return {"title": item["name"], "sub": item["author"], "detail": f"{item['downloads']:,}", "image": item["preview"],
+                    "installed": item["name"] in local, "open": lambda: self.theme_detail(kind, item, 0)}
+        self.market_page(self.theme_nav, _(self.THEME_TITLES[kind]), "gnome-look.org", ["下載次數", "最新", "評分", "名稱"], search, describe)
 
     def theme_detail(self, kind, item, index):
         pg = Adw.PreferencesPage()
@@ -1643,47 +1708,37 @@ class Tuneup(Adw.Application):
                             lambda: system.run_root(self.NONINTERACTIVE + ["apt-get", "-y", "remove", package]), "apps", "已移除")
         in_background(lambda: system.removal_plan(package), planned)
 
+    def show_app_search(self):
+        def search(text, _order, _number):
+            found = system.search_apps(text)
+            return [dict(item, source=source) for source in ("snap", "apt") for item in found[source]], False
+
+        def install(item):
+            name = item["name"]
+            if item["source"] == "apt":
+                work = lambda: system.run_root(self.NONINTERACTIVE + ["apt-get", "-y", "install", name], timeout=1800)
+            else:
+                work = lambda: system.run(["snap", "install", name], timeout=1800)
+            self.run_system(_("安裝 {name}？").format(name=name), _("來源：{source}。安裝需要授權。").format(source=item["source"]), "安裝", work, "apps", "已安裝")
+
+        def describe(item):
+            return {"title": item["name"], "sub": item["summary"], "detail": item["source"], "image": "", "installed": False, "open": lambda: install(item)}
+        self.market_page(self.apps_nav, _("安裝新的應用程式"), _("apt 與 Snap"), [], search, describe,
+                         empty=("輸入關鍵字開始搜尋", "Snap 商店連不上時只會有 apt 的結果"), grid=False)
+
     def page_apps(self):
+        nav = Adw.NavigationView()
+        self.apps_nav = nav
         p = Adw.PreferencesPage()
         g = group()
         total = value("…")
         g.add(row("已安裝的應用程式", "只列出你自己安裝的；被相依帶進來的套件不在這裡", None, [total]))
         p.add(g)
 
-        finder = group("安裝新的應用程式")
-        entry = Adw.EntryRow(title=_("搜尋 apt 與 Snap"), show_apply_button=True)
-        finder.add(entry)
-        p.add(finder)
-        results = []
-
-        def show_results(found, err):
-            for r in results:
-                finder.remove(r)
-            results.clear()
-            found = found or {"apt": [], "snap": []}
-            for source, items in (("Snap", found["snap"]), ("apt", found["apt"])):
-                for item in items:
-                    name = item["name"]
-                    if source == "apt":
-                        work = lambda name=name: system.run_root(self.NONINTERACTIVE + ["apt-get", "-y", "install", name], timeout=1800)
-                    else:
-                        work = lambda name=name: system.run(["snap", "install", name], timeout=1800)
-                    b = btn("安裝", on_click=lambda name=name, source=source, work=work: self.run_system(
-                        _("安裝 {name}？").format(name=name), _("來源：{source}。安裝需要授權。").format(source=source), "安裝", work, "apps", "已安裝"))
-                    results.append(row(name, item["summary"], None, [value(source), b], data=True))
-            if not results:
-                results.append(row(_("找不到符合的應用程式"), err or _("換個關鍵字試試；Snap 商店連不上時只會有 apt 的結果"), data=True))
-            for r in results:
-                finder.add(r)
-            self.mark_rows(finder)
-
-        def search(*_a):
-            text = entry.get_text().strip()
-            if text:
-                show_results({"apt": [], "snap": []}, _("搜尋中…"))
-                in_background(lambda: system.search_apps(text), show_results)
-        entry.connect("apply", search)
-        entry.connect("entry-activated", search)
+        r = row("安裝新的應用程式", "搜尋 apt 與 Snap", None, [self.next_icon()])
+        r.set_activatable(True)
+        r.connect("activated", lambda *_a: self.show_app_search())
+        g.add(r)
         snap_group, apt_group = group("Snap"), group("apt", "依佔用空間排序")
         loading = [row("載入中…"), row("載入中…")]
         snap_group.add(loading[0])
@@ -1715,7 +1770,8 @@ class Tuneup(Adw.Application):
             self.page_words["apps"] = [s["name"].lower() for s in snaps] + [pkg["name"].lower() for pkg in packages]
             self.mark_rows(p)
         in_background(lambda: {"snaps": system.snaps(), "apt": system.apt_manual()}, fill)
-        return p
+        nav.add(Adw.NavigationPage(title=_("應用程式"), child=p))
+        return nav
 
     # ---------- 系統更新 ----------
     def page_updates(self):

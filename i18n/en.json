@@ -524,9 +524,6 @@
   "更新紀錄": "Update history",
   "關於 Tuneup": "About Tuneup",
   "來源：{source}。安裝需要授權。": "Source: {source}. Installing needs authorization.",
-  "找不到符合的應用程式": "No matching applications",
-  "換個關鍵字試試；Snap 商店連不上時只會有 apt 的結果": "Try another keyword; when the Snap store is unreachable only apt results appear",
-  "搜尋中…": "Searching…",
   "暫緩更新 {name}？": "Hold updates for {name}?",
   "取消暫緩 {name}？": "Stop holding {name}?",
   "暫緩的套件在「全部更新」時會被略過，直到你取消暫緩。": "Held packages are skipped by Update All until you unhold them.",
@@ -587,5 +584,10 @@
   "來自 gnome-look.org，會解壓縮到你的主題資料夾。": "From gnome-look.org; it will be extracted into your theme folder.",
   "下載中…": "Downloading…",
   "沒有可下載的檔案": "No downloadable files",
-  "請到網頁上查看": "See the web page"
+  "請到網頁上查看": "See the web page",
+  "改用清單檢視": "Switch to list view",
+  "改用格狀檢視": "Switch to grid view",
+  "輸入關鍵字開始搜尋": "Type a keyword to search",
+  "Snap 商店連不上時只會有 apt 的結果": "When the Snap store is unreachable only apt results appear",
+  "apt 與 Snap": "apt and Snap"
 }

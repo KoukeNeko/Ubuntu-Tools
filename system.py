@@ -256,7 +256,7 @@ def search_apps(query, limit=12):
     if not query:
         return {"apt": [], "snap": []}
     return {"apt": parse_apt_search(run(["apt-cache", "search", "--names-only", query])[1], query)[:limit],
-            "snap": parse_snap_find(run(["snap", "find", query], timeout=15)[1])[:limit]}
+            "snap": parse_snap_find(run(["snap", "find", query], timeout=6)[1])[:limit]}  # 商店連不上時不要讓使用者等太久
 
 
 # ---------- 更新紀錄與暫緩 ----------
