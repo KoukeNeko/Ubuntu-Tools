@@ -700,7 +700,7 @@ class Tuneup(Adw.Application):
             self.toast_raw(_("無法套用：{error}").format(error=e.message))
             return
         self.pending = {}
-        self.reload(page)
+        self.refresh(page or self.stack.get_visible_child_name())  # 在子頁面套用時不把使用者帶回主畫面
         self.toast(message if entry else "沒有需要變更的項目")
 
     def discard_pending(self):
@@ -1344,15 +1344,35 @@ class Tuneup(Adw.Application):
             self.reload("themes")
         self.confirm("移除這個主題？", _("「{name}」會移到垃圾桶。").format(name=theme["name"]), "移除", run, destructive=True)
 
-    def theme_installed(self, names, err, button=None):
+    def theme_installed(self, names, err, kind=None, button=None):
         if button and not err:
-            button.set_label(_("已安裝"))
-            button.set_sensitive(False)
+            self.offer_apply(kind, names, button)
         self.refresh("themes")
         if err:
             self.toast_raw(_("無法安裝：{error}").format(error=err))
         else:
             self.toast_raw(_("已安裝 {names}，尚未套用").format(names=", ".join(names)))
+
+    def offer_apply(self, kind, names, button):
+        """安裝完成後，把「安裝」按鈕換成「套用」。一個壓縮檔可能含多個變體，這時按下會列出來讓使用者選。"""
+        schema, key = market.KINDS[kind]["setting"]
+        parent = button.get_parent()
+        if not store.has_key(schema, key):  # 例如還沒裝 User Themes 的 Shell 主題
+            button.set_label(_("已安裝"))
+            button.set_sensitive(False)
+            return
+        if len(names) == 1:
+            new = btn("套用", "suggested-action", on_click=lambda: self.apply_theme(kind, names[0]))
+        else:
+            menu = Gio.Menu()
+            for name in sorted(names):
+                item = Gio.MenuItem.new(name, None)
+                item.set_action_and_target_value("app.theme-apply", GLib.Variant("s", f"{kind}:{name}"))
+                menu.append_item(item)
+            new = Gtk.MenuButton(label=_("套用"), menu_model=menu, valign=Gtk.Align.CENTER)
+            new.add_css_class("suggested-action")
+        parent.remove(button)
+        parent.append(new)
 
     def install_theme_file(self, kind):
         def opened(dialog, result):
@@ -1407,7 +1427,7 @@ class Tuneup(Adw.Application):
             b.connect("clicked", lambda button, f=f: self.confirm(
                 _("安裝 {name}？").format(name=f["name"]), _("來自 gnome-look.org，會解壓縮到你的主題資料夾。"), "安裝",
                 lambda: (self.toast("下載中…"), in_background(lambda: market.install_from_market(kind, f),
-                                                          lambda names, err: self.theme_installed(names, err, button)))))
+                                                          lambda names, err: self.theme_installed(names, err, kind, button)))))
             g.add(row(f["name"], system.human(f["size"]) if f["size"] else None, None, [b], data=True))
         if not item["files"]:
             g.add(row("沒有可下載的檔案", "請到網頁上查看"))
@@ -2233,6 +2253,7 @@ class Tuneup(Adw.Application):
         with_name = {
             "pf-update": lambda name: self.create_profile(name), "pf-export": self.export_profile, "pf-rename": self.rename_profile,
             "pf-delete": self.delete_profile, "restore-to": self.restore_entry,
+            "theme-apply": lambda target: self.apply_theme(*target.split(":", 1)),
         }
         for name, cb in with_name.items():
             a = Gio.SimpleAction.new(name, GLib.VariantType.new("s"))
