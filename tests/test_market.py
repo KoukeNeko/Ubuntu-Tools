@@ -107,11 +107,12 @@ class MarketTest(unittest.TestCase):
 
     def test_parse_ocs_collects_all_files(self):
         items, total = market.parse_ocs({"totalitems": 3, "data": [{
-            "id": 5, "name": "Candy", "personid": "eli", "description": "<h2>Hi &hearts;<br />there</h2>", "downloads": "10", "score": "96",
+            "id": 5, "name": "Candy", "personid": "eli", "previewpic1": "https://i/1.png", "previewpic2": "https://i/2.png", "previewpic4": "https://i/4.png", "description": "<h2>Hi &hearts;<br />there</h2>", "downloads": "10", "score": "96",
             "downloadlink1": "https://f/1", "downloadname1": "a.tar.xz", "downloadsize1": "1702", "downloadmd5sum1": "abc",
             "downloadlink2": "https://f/2", "downloadname2": "b.zip"}]})
         self.assertEqual(total, 3)
         self.assertEqual(items[0]["description"], "Hi ♥\nthere")
+        self.assertEqual((items[0]["preview"], items[0]["previews"]), ("https://i/1.png", ["https://i/1.png", "https://i/2.png", "https://i/4.png"]))
         self.assertEqual([(f["name"], f["size"]) for f in items[0]["files"]], [("a.tar.xz", 1702 * 1024), ("b.zip", 0)])
 
 

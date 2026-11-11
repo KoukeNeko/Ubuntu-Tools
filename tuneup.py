@@ -125,6 +125,10 @@ VERSION = "0.1.0"
 AUTOSTART_DIR = Path(GLib.get_user_config_dir()) / "autostart"
 LAUNCHER = Path(GLib.get_user_data_dir()) / "applications" / "io.github.doeshing.Tuneup.desktop"
 MAX_IMPORT_BYTES = 1_000_000
+CARD_WIDTH = 200          # 市集格狀檢視的卡片寬度
+SIDE_COLUMN_WIDTH = 320   # 詳細頁右欄（下載與安裝）的寬度
+NARROW_DETAIL = "max-width: 800sp"  # 詳細頁的內容區比這個窄時，雙欄改成上下排列
+NARROW_WINDOW = "max-width: 720sp"  # 視窗比這個窄時，側欄與內容改成一次只顯示一個
 RESET = object()  # 未套用變更中的「還原為預設值」
 
 
@@ -899,7 +903,6 @@ class Tuneup(Adw.Application):
         search(關鍵字, 排序索引, 頁碼) -> (項目, 是否還有下一頁)
         describe(項目) -> {"title", "sub", "detail", "image", "installed", "open"}
         """
-        page = Adw.PreferencesPage()
         # 搜尋、排序與檢視方式放在子頁面的標題列，和 GNOME 其他應用程式的做法一致
         entry = Gtk.SearchEntry(placeholder_text=_("搜尋 {source}").format(source=source), search_delay=400, hexpand=True)
         sort = Gtk.DropDown(model=Gtk.StringList.new([_(x) for x in sorts]), tooltip_text=_("排序"), visible=bool(sorts))
@@ -908,11 +911,16 @@ class Tuneup(Adw.Application):
         tools.append(sort)
         tools.append(view)
         results, footer = group(), group()
-        flow = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, homogeneous=True, min_children_per_line=2, max_children_per_line=3,
-                           column_spacing=12, row_spacing=12, activate_on_single_click=True)
-        results.add(flow)
-        page.add(results)
-        page.add(footer)
+        # 格狀用滿整個內容寬度，欄數隨視窗寬度增減；清單與頁尾維持和其他頁面相同的寬度
+        flow = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, homogeneous=True, min_children_per_line=2, max_children_per_line=12,
+                           column_spacing=12, row_spacing=12, activate_on_single_click=True, valign=Gtk.Align.START)
+        narrow = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24)
+        narrow.append(results)
+        narrow.append(footer)
+        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24, margin_top=24, margin_bottom=24, margin_start=12, margin_end=12)
+        body.append(flow)
+        body.append(Adw.Clamp(maximum_size=600, child=narrow))
+        page = scroll(body)
         state = {"page": 0, "items": [], "rows": [], "foot": None, "serial": 0, "grid": grid and load_conf().get("market_view", "grid") == "grid"}
         flow.connect("child-activated", lambda _f, child: describe(state["items"][child.get_index()])["open"]())
 
@@ -930,16 +938,17 @@ class Tuneup(Adw.Application):
                     card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
                     card.add_css_class("card")
                     card.add_css_class("market-card")
+                    # 卡片固定寬度，FlowBox 才能依視窗寬度決定一列放幾張
                     if d["image"]:
-                        card.append(self.remote_picture(d["image"], -1, 110))
+                        card.append(self.remote_picture(d["image"], CARD_WIDTH, 120))
                     else:
-                        blank = Gtk.CenterBox(height_request=110)
+                        blank = Gtk.CenterBox(width_request=CARD_WIDTH, height_request=120)
                         blank.set_center_widget(tile(d["title"], index))
                         card.append(blank)
-                    name = Gtk.Label(label=d["title"], xalign=0, ellipsize=Pango.EllipsizeMode.END)
+                    name = Gtk.Label(label=d["title"], xalign=0, ellipsize=Pango.EllipsizeMode.END, max_width_chars=16)
                     name.add_css_class("heading")
                     card.append(name)
-                    note = Gtk.Label(label=_("已安裝") if d["installed"] else d["detail"] or d["sub"], xalign=0, ellipsize=Pango.EllipsizeMode.END)
+                    note = Gtk.Label(label=_("已安裝") if d["installed"] else d["detail"] or d["sub"], xalign=0, ellipsize=Pango.EllipsizeMode.END, max_width_chars=16)
                     note.add_css_class("caption")
                     note.add_css_class("success" if d["installed"] else "dim-label")
                     card.append(note)
@@ -960,6 +969,7 @@ class Tuneup(Adw.Application):
             state["rows"] = []
             flow.remove_all()
             flow.set_visible(state["grid"])
+            results.set_visible(not state["grid"])
             view.set_icon_name("view-list-symbolic" if state["grid"] else "view-grid-symbolic")
             view.set_tooltip_text(_("改用清單檢視") if state["grid"] else _("改用格狀檢視"))
             render(state["items"], 0)
@@ -1002,14 +1012,68 @@ class Tuneup(Adw.Application):
     def open_uri(self, uri):
         Gtk.UriLauncher(uri=uri).launch(self.win, None, None)
 
-    def detail_header(self, pg, preview, name, sub, tile_index):
-        if preview:
+    def gallery(self, urls):
+        """預覽圖：一張就直接顯示；多張時可以滑動或按左右鍵切換，下方有圓點指示目前是第幾張。"""
+        if len(urls) == 1:
+            return self.remote_picture(urls[0], -1, 270, Gtk.ContentFit.CONTAIN)  # 不設寬度，讓它隨欄寬縮放
+        carousel = Adw.Carousel(spacing=12, allow_scroll_wheel=False)
+        for url in urls:
+            carousel.append(self.remote_picture(url, -1, 270, Gtk.ContentFit.CONTAIN))
+
+        def step(delta):
+            target = round(carousel.get_position()) + delta
+            if 0 <= target < carousel.get_n_pages():
+                carousel.scroll_to(carousel.get_nth_page(target), True)
+        overlay = Gtk.Overlay(child=carousel)
+        for icon, delta, side in (("go-previous-symbolic", -1, Gtk.Align.START), ("go-next-symbolic", 1, Gtk.Align.END)):
+            b = btn(None, "circular osd", icon, on_click=lambda delta=delta: step(delta))
+            b.set_halign(side)
+            b.set_margin_start(6)
+            b.set_margin_end(6)
+            overlay.add_overlay(b)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        box.append(overlay)
+        box.append(Adw.CarouselIndicatorDots(carousel=carousel))
+        return box
+
+    def detail_header(self, left, previews, name, sub, description):
+        """詳細頁左欄的開頭：預覽圖，以及名稱加說明。"""
+        if previews:
             g = group()
-            g.add(self.remote_picture(preview, -1, 270, Gtk.ContentFit.CONTAIN))  # 不設寬度，避免把頁面最小寬度撐過 400
-            pg.add(g)
+            g.add(self.gallery(previews))
+            left.append(g)
         g = group()
-        g.add(row(name, sub, tile(name, tile_index), data=True))
-        return g
+        g.add(row(name, sub, tile(name, 0), data=True))
+        if description:
+            d = Adw.ActionRow(title=esc(description), title_lines=0)
+            d.add_css_class("wrap")  # 說明全文允許換行，mark_rows 不會把它截成一行
+            g.add(d)
+        left.append(g)
+
+    def two_columns(self, left, right):
+        """詳細頁的版面：夠寬時左邊是資訊、右邊是動作區；變窄時上下排列，寬度與其他頁面相同。"""
+        def column(groups):
+            col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24, valign=Gtk.Align.START)
+            for g in groups:
+                col.append(g)
+            return col
+        left_col, right_col = column(left), column(right)
+        left_col.set_hexpand(True)
+        # 右欄固定寬度：群組說明是很長的一行字，不限制的話它會反過來把左欄擠窄
+        right_col.set_size_request(SIDE_COLUMN_WIDTH, -1)
+        side = Adw.Clamp(maximum_size=SIDE_COLUMN_WIDTH, tightening_threshold=SIDE_COLUMN_WIDTH, child=right_col, valign=Gtk.Align.START)
+        box = Gtk.Box(spacing=24, margin_top=24, margin_bottom=24, margin_start=12, margin_end=12)
+        box.append(left_col)
+        box.append(side)
+        clamp = Adw.Clamp(maximum_size=1100, child=box)
+        narrow = Adw.Breakpoint.new(Adw.BreakpointCondition.parse(NARROW_DETAIL))
+        narrow.add_setter(box, "orientation", Gtk.Orientation.VERTICAL)
+        narrow.add_setter(clamp, "maximum-size", 600)
+        narrow.add_setter(side, "maximum-size", 10000)  # 上下排列時，右欄跟左欄一樣寬
+        narrow.add_setter(side, "tightening-threshold", 10000)
+        responsive = Adw.BreakpointBin(child=scroll(clamp), width_request=300, height_request=200)
+        responsive.add_breakpoint(narrow)
+        return responsive
 
     def show_explore(self):
         installed = {e["uuid"] for e in self.exts}
@@ -1024,21 +1088,16 @@ class Tuneup(Adw.Application):
         self.market_page(self.ext_nav, _("探索擴充功能"), "extensions.gnome.org", ["熱門", "最新", "下載次數", "名稱"], search, describe)
 
     def explore_detail(self, item, index, installed):
-        pg = Adw.PreferencesPage()
-        g = self.detail_header(pg, item["screenshot"], item["name"], item["uuid"], index)
-        if item["description"]:
-            d = Adw.ActionRow(title=esc(item["description"]), title_lines=0)
-            d.add_css_class("wrap")
-            g.add(d)
-        pg.add(g)
-        g = group()
+        left, right = [], []
+        self.detail_header(left, [item["screenshot"]] if item["screenshot"] else [], item["name"], item["uuid"], item["description"])
+        g = group("安裝")
         if installed:
             g.add(row("已安裝", "可以在「擴充功能」頁管理", Gtk.Image(icon_name="emblem-ok-symbolic")))
         else:
             b = btn("安裝", "suggested-action")
             b.connect("clicked", lambda button: self.install_extension(item["uuid"], item["name"], button))
             g.add(row("安裝這個擴充功能", "GNOME Shell 會跳出確認視窗", None, [b]))
-        pg.add(g)
+        right.append(g)
         g = group("資訊")
         g.add(row(_("作者"), item["creator"], data=True))
         g.add(row(_("下載次數"), f"{item['downloads']:,}", data=True))
@@ -1046,8 +1105,8 @@ class Tuneup(Adw.Application):
             g.add(row("extensions.gnome.org", item["page"], None, [btn("開啟", on_click=lambda: self.open_uri(item["page"]))], data=True))
         if item["homepage"].startswith("https://"):
             g.add(row(_("專案首頁"), item["homepage"], None, [btn("開啟", on_click=lambda: self.open_uri(item["homepage"]))], data=True))
-        pg.add(g)
-        self.ext_nav.push(self.sub_page(item["name"], pg))
+        left.append(g)
+        self.ext_nav.push(self.sub_page(item["name"], self.two_columns(left, right)))
 
     def install_extension_file(self):
         """安裝使用者自己下載的擴充功能壓縮檔。"""
@@ -1305,13 +1364,8 @@ class Tuneup(Adw.Application):
         self.market_page(self.theme_nav, _(self.THEME_TITLES[kind]), "gnome-look.org", ["下載次數", "最新", "評分", "名稱"], search, describe)
 
     def theme_detail(self, kind, item, index):
-        pg = Adw.PreferencesPage()
-        g = self.detail_header(pg, item["preview"], item["name"], " · ".join(x for x in (item["author"], item["version"]) if x), index)
-        if item["description"]:
-            d = Adw.ActionRow(title=esc(item["description"][:1200]), title_lines=0)
-            d.add_css_class("wrap")
-            g.add(d)
-        pg.add(g)
+        left, right = [], []
+        self.detail_header(left, item["previews"], item["name"], " · ".join(x for x in (item["author"], item["version"]) if x), item["description"][:1200])
         g = group("檔案", "這些是第三方上傳的檔案。Tuneup 會核對檔案完整性，並拒絕會寫到主題資料夾以外的壓縮檔")
         for f in item["files"]:
             b = btn("安裝", on_click=lambda f=f: self.confirm(
@@ -1320,14 +1374,14 @@ class Tuneup(Adw.Application):
             g.add(row(f["name"], system.human(f["size"]) if f["size"] else None, None, [b], data=True))
         if not item["files"]:
             g.add(row("沒有可下載的檔案", "請到網頁上查看"))
-        pg.add(g)
+        right.append(g)
         g = group("資訊")
         g.add(row(_("下載次數"), f"{item['downloads']:,}", data=True))
         g.add(row(_("評分"), f"{item['score']}%", data=True))
         if item["page"].startswith("https://"):
             g.add(row("gnome-look.org", item["page"], None, [btn("開啟", on_click=lambda: self.open_uri(item["page"]))], data=True))
-        pg.add(g)
-        self.theme_nav.push(self.sub_page(item["name"], pg))
+        left.append(g)
+        self.theme_nav.push(self.sub_page(item["name"], self.two_columns(left, right)))
 
     def page_themes(self):
         nav = Adw.NavigationView()
@@ -2240,7 +2294,11 @@ class Tuneup(Adw.Application):
         split.set_content(self.content_page)
 
         self.mark_rows(split)
-        self.toasts.set_child(split)
+        collapse = Adw.Breakpoint.new(Adw.BreakpointCondition.parse(NARROW_WINDOW))
+        collapse.add_setter(split, "collapsed", True)
+        responsive = Adw.BreakpointBin(child=split, width_request=360, height_request=360)
+        responsive.add_breakpoint(collapse)
+        self.toasts.set_child(responsive)
         self.win.set_content(self.toasts)
         self.update_depends()
         self.update_banner()

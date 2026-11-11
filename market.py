@@ -24,6 +24,7 @@ MAX_JSON_BYTES = 2_000_000
 MAX_IMAGE_BYTES = 4_000_000
 MAX_ARCHIVE_BYTES = 400_000_000
 PAGE_SIZE = 15
+MAX_PREVIEWS = 8  # 詳細頁最多載入幾張預覽圖
 
 HOME_DATA = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share")
 ICON_DIRS = ("/usr/share/icons", str(HOME_DATA / "icons"), "~/.icons")
@@ -97,10 +98,11 @@ def parse_ocs(data):
             files.append({"name": d.get(f"downloadname{n}", ""), "url": d[f"downloadlink{n}"],
                           "size": int(d.get(f"downloadsize{n}") or 0) * 1024, "md5": d.get(f"downloadmd5sum{n}", "")})
             n += 1
+        previews = [d[f"previewpic{i}"] for i in range(1, MAX_PREVIEWS + 1) if d.get(f"previewpic{i}")]
         items.append({
             "id": str(d.get("id", "")), "name": d.get("name", ""), "author": d.get("personid", ""), "version": d.get("version", ""),
             "description": plain(d.get("description")), "downloads": int(d.get("downloads") or 0), "score": int(d.get("score") or 0),
-            "preview": d.get("previewpic1", ""), "page": d.get("detailpage", ""), "files": files,
+            "preview": previews[0] if previews else "", "previews": previews, "page": d.get("detailpage", ""), "files": files,
         })
     return items, int(data.get("totalitems") or 0)
 
