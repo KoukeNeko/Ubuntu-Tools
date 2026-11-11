@@ -3,6 +3,8 @@
 用法:  python3 tuneup.py            開啟視窗
        python3 tuneup.py --shot DIR  將每個頁面截圖存到 DIR 後離開
        python3 tuneup.py --lang en   這次以指定語言開啟（system / zh_TW / en）
+       python3 tuneup.py --safe-mode         不開視窗，暫停所有擴充功能
+       python3 tuneup.py --install-launcher  加入應用程式選單
 """
 import sys
 import gi
@@ -104,7 +106,9 @@ row.two-line box.header{min-height:64px}
 
 # ---------- 系統資料 ----------
 EXT_STATE_ACTIVE, EXT_STATE_ERROR, EXT_STATE_OUT_OF_DATE = 1, 3, 4  # 取自 GNOME Shell 的 ExtensionState
+VERSION = "0.1.0"
 AUTOSTART_DIR = Path(GLib.get_user_config_dir()) / "autostart"
+LAUNCHER = Path(GLib.get_user_data_dir()) / "applications" / "io.github.doeshing.Tuneup.desktop"
 MAX_IMPORT_BYTES = 1_000_000
 RESET = object()  # 未套用變更中的「還原為預設值」
 
@@ -545,6 +549,22 @@ def row(title, sub=None, prefix=None, suffix=(), data=False):
 
 def when(timestamp):
     return GLib.DateTime.new_from_unix_local(timestamp).format("%Y-%m-%d %H:%M")
+
+
+def install_launcher():
+    """在使用者的應用程式選單加入 Tuneup，指向目前這份程式的位置。"""
+    LAUNCHER.parent.mkdir(parents=True, exist_ok=True)
+    LAUNCHER.write_text("[Desktop Entry]\nType=Application\nName=Tuneup\nComment=Tweaks, extensions and system tools for Ubuntu\n"
+                        f"Exec=python3 {Path(__file__).resolve()}\nIcon=preferences-system\nTerminal=false\nCategories=Settings;System;\n"
+                        "StartupWMClass=io.github.doeshing.Tuneup\n")
+    return LAUNCHER
+
+
+def enter_safe_mode():
+    """不開視窗，直接暫停所有擴充功能；擴充功能讓桌面無法使用時，可從文字終端機執行。"""
+    text = store.to_variant(*store.MASTER, True).print_(False)
+    done = store.apply("tweak", [store.gsettings_change(*store.MASTER, text)])
+    print("All extensions are now paused. Undo it from History in Tuneup." if done else "Extensions were already paused.")
 
 
 class Tuneup(Adw.Application):
@@ -1407,6 +1427,41 @@ class Tuneup(Adw.Application):
         total = value("…")
         g.add(row("已安裝的應用程式", "只列出你自己安裝的；被相依帶進來的套件不在這裡", None, [total]))
         p.add(g)
+
+        finder = group("安裝新的應用程式")
+        entry = Adw.EntryRow(title=_("搜尋 apt 與 Snap"), show_apply_button=True)
+        finder.add(entry)
+        p.add(finder)
+        results = []
+
+        def show_results(found, err):
+            for r in results:
+                finder.remove(r)
+            results.clear()
+            found = found or {"apt": [], "snap": []}
+            for source, items in (("Snap", found["snap"]), ("apt", found["apt"])):
+                for item in items:
+                    name = item["name"]
+                    if source == "apt":
+                        work = lambda name=name: system.run_root(self.NONINTERACTIVE + ["apt-get", "-y", "install", name], timeout=1800)
+                    else:
+                        work = lambda name=name: system.run(["snap", "install", name], timeout=1800)
+                    b = btn("安裝", on_click=lambda name=name, source=source, work=work: self.run_system(
+                        _("安裝 {name}？").format(name=name), _("來源：{source}。安裝需要授權。").format(source=source), "安裝", work, "apps", "已安裝"))
+                    results.append(row(name, item["summary"], None, [value(source), b], data=True))
+            if not results:
+                results.append(row(_("找不到符合的應用程式"), err or _("換個關鍵字試試；Snap 商店連不上時只會有 apt 的結果"), data=True))
+            for r in results:
+                finder.add(r)
+            self.mark_rows(finder)
+
+        def search(*_a):
+            text = entry.get_text().strip()
+            if text:
+                show_results({"apt": [], "snap": []}, _("搜尋中…"))
+                in_background(lambda: system.search_apps(text), show_results)
+        entry.connect("apply", search)
+        entry.connect("entry-activated", search)
         snap_group, apt_group = group("Snap"), group("apt", "依佔用空間排序")
         loading = [row("載入中…"), row("載入中…")]
         snap_group.add(loading[0])
@@ -1462,17 +1517,37 @@ class Tuneup(Adw.Application):
         pending.add(loading)
         p.add(pending)
 
+        history = group("更新紀錄", "來自 /var/log/apt/history.log")
+        p.add(history)
+
+        def set_hold(name, hold):
+            self.run_system(_("暫緩更新 {name}？").format(name=name) if hold else _("取消暫緩 {name}？").format(name=name),
+                            _("暫緩的套件在「全部更新」時會被略過，直到你取消暫緩。"), "暫緩" if hold else "取消暫緩",
+                            lambda: system.run_root(["apt-mark", "hold" if hold else "unhold", name]), "updates", "已變更")
+
         def fill(found, err):
             pending.remove(loading)
-            found = found or []
-            summary.set_subtitle(esc(_("{n} 個套件可更新").format(n=len(found)) if found else _("系統是最新的")))
-            upgrade.set_sensitive(bool(found))
-            for pkg in found:
-                pending.add(row(pkg["name"], f"{pkg['old']} → {pkg['new']}", data=True))
-            if not found:
+            found = found or {"upgradable": [], "held": [], "history": []}
+            packages, held = found["upgradable"], set(found["held"])
+            ready = [pkg for pkg in packages if pkg["name"] not in held]
+            summary.set_subtitle(esc(_("{n} 個套件可更新").format(n=len(ready)) if ready else _("系統是最新的")))
+            upgrade.set_sensitive(bool(ready))
+            for pkg in packages:
+                is_held = pkg["name"] in held
+                suffix = ([chip("已暫緩", "warning")] if is_held else []) + [
+                    btn("取消暫緩" if is_held else "暫緩", on_click=lambda name=pkg["name"], hold=not is_held: set_hold(name, hold))]
+                pending.add(row(pkg["name"], f"{pkg['old']} → {pkg['new']}", None, suffix, data=True))
+            for name in sorted(held - {pkg["name"] for pkg in packages}):
+                pending.add(row(name, _("目前沒有新版本"), None, [chip("已暫緩", "warning"), btn("取消暫緩", on_click=lambda name=name: set_hold(name, False))], data=True))
+            if not packages and not held:
                 pending.add(row("沒有可更新的套件", "這是上次檢查時的結果；按「重新檢查」取得最新清單", Gtk.Image(icon_name="emblem-ok-symbolic")))
+            for e in found["history"]:
+                counts = " · ".join(_(label).format(n=e[kind]) for kind, label in (("upgrade", "升級 {n}"), ("install", "安裝 {n}"), ("remove", "移除 {n}")) if e[kind])
+                history.add(row(e["time"], " — ".join(x for x in (counts, e["command"]) if x), data=True))
+            if not found["history"]:
+                history.add(row("沒有更新紀錄", "讀不到 apt 的紀錄檔，或還沒有任何紀錄"))
             self.mark_rows(p)
-        in_background(system.upgradable, fill)
+        in_background(lambda: {"upgradable": system.upgradable(), "held": system.held(), "history": system.apt_history()}, fill)
         return p
 
     # ---------- 錯誤記錄 ----------
@@ -1770,7 +1845,8 @@ class Tuneup(Adw.Application):
         return lb
 
     def add_actions(self):
-        simple = {"theme": self.flip_theme, "reload": lambda: self.reload(), "discard": self.discard_pending}
+        simple = {"theme": self.flip_theme, "reload": lambda: self.reload(), "discard": self.discard_pending,
+                  "about": self.show_about, "launcher": lambda: self.toast_raw(_("已加入應用程式選單：{path}").format(path=install_launcher()))}
         for name, cb in simple.items():
             a = Gio.SimpleAction.new(name, None)
             a.connect("activate", lambda _a, _p, cb=cb: cb())
@@ -1830,6 +1906,8 @@ class Tuneup(Adw.Application):
         menu.append(_("重新整理"), "app.reload")
         menu.append(_("捨棄未套用的變更"), "app.discard")
         menu.append(_("切換深淺色"), "app.theme")
+        menu.append(_("加入應用程式選單"), "app.launcher")
+        menu.append(_("關於 Tuneup"), "app.about")
         langs = Gio.Menu()
         for code, name in LANGS:
             langs.append(_(name) if code == "system" else name, f"app.lang::{code}")
@@ -1904,6 +1982,10 @@ class Tuneup(Adw.Application):
             return not q or q in r.ntitle.lower() or any(q in word for word in self.page_words.get(r.nid, []))
         self.nav_list.set_filter_func(match)
 
+    def show_about(self):
+        Adw.AboutDialog(application_name="Tuneup", version=VERSION, application_icon="preferences-system",
+                        comments=_("Ubuntu 的調校、擴充功能與系統管理工具。每一次變更都看得見、退得回。")).present(self.win)
+
     def flip_theme(self):
         m = Adw.StyleManager.get_default()
         m.set_color_scheme(Adw.ColorScheme.FORCE_LIGHT if m.get_dark() else Adw.ColorScheme.FORCE_DARK)
@@ -1931,6 +2013,12 @@ class Tuneup(Adw.Application):
 
 
 if __name__ == "__main__":
+    if "--safe-mode" in sys.argv:
+        enter_safe_mode()
+        sys.exit(0)
+    if "--install-launcher" in sys.argv:
+        print(install_launcher())
+        sys.exit(0)
     shot = None
     if "--shot" in sys.argv:
         shot = sys.argv[sys.argv.index("--shot") + 1]
