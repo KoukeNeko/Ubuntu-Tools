@@ -450,10 +450,16 @@ MODULES = [
     ("驅動與硬體", "D", True, "電池健康、韌體版本、建議的驅動程式"),
     ("外掛 SDK", "+", False, "讓社群以 Python / JS 寫自己的模組並分享"),
 ]
+# 接在某個調校分類後面的獨立頁面
+EXTRA_PAGES = {
+    "鍵盤與滑鼠": [("xkb", "鍵盤配置選項", "preferences-desktop-keyboard-symbolic")],
+    "音效": [("audio", "音訊裝置", "audio-card-symbolic")],
+}
+POWER_PAGE = "tw%d" % next(i for i, t in enumerate(TWEAKS) if t[0] == "電源")
 SIDEBAR = (  # (id, 標題, 圖示)；None = 分隔線。調校分類直接由 TWEAKS 產生
     [("dash", "總覽", "go-home-symbolic"), ("ext", "擴充功能", "application-x-addon-symbolic"), None]
     + [entry for i, (name, icon, _groups) in enumerate(TWEAKS)
-       for entry in [(f"tw{i}", name, icon)] + ([("audio", "音訊裝置", "audio-card-symbolic")] if name == "音效" else [])]
+       for entry in [(f"tw{i}", name, icon)] + EXTRA_PAGES.get(name, [])]
     + [("startup", "啟動應用程式", "system-run-symbolic"), None,
        ("apps", "應用程式", "view-app-grid-symbolic"), ("updates", "系統更新", "software-update-available-symbolic"),
        ("cleanup", "系統清理", "user-trash-symbolic"), ("hardware", "驅動與硬體", "computer-symbolic"),
@@ -1094,6 +1100,43 @@ class Tuneup(Adw.Application):
             for w in rows:
                 g.add(w)
             p.add(g)
+        if nid == POWER_PAGE:
+            p.add(self.lid_group())
+        return p
+
+    def lid_group(self):
+        """闔上螢幕不是 gsettings，而是靠一個登入時啟動的抑制程序，所以不走「未套用」流程。"""
+        g = group("筆記型電腦")
+        w = Adw.SwitchRow(title=_m("闔上螢幕時不暫停"), subtitle=_m("立即生效，並在每次登入時維持；外接螢幕使用時很有用"), active=system.lid_ignored())
+
+        def toggled(row_, _p):
+            try:
+                system.set_lid_ignored(row_.get_active())
+                self.toast("已變更")
+            except OSError as err:
+                self.toast_raw(_("無法套用：{error}").format(error=str(err)))
+        w.connect("notify::active", toggled)
+        g.add(w)
+        return g
+
+    # ---------- 鍵盤配置選項 ----------
+    def page_xkb(self):
+        p = Adw.PreferencesPage()
+        schema, key = "org.gnome.desktop.input-sources", "xkb-options"
+        g = group()
+        active = self.shown_value(schema, key) if store.has_key(schema, key) else []
+        g.add(row("XKB 配置選項", "與 GNOME Tweaks 的「其他配置選項」相同；選項說明是系統提供的英文", None, [value(_("已啟用 {n} 項").format(n=len(active)))]))
+        p.add(g)
+        g = group("選項")
+        for title, options in system.xkb_options() if store.has_key(schema, key) else []:
+            ex = Adw.ExpanderRow(title=esc(title), subtitle=esc(_("已啟用 {n} 項").format(n=sum(1 for o, _d in options if o in active))) if any(o in active for o, _d in options) else "")
+            for option, desc in options:
+                w = self.tweak_row(xkb_switch(desc, option))
+                w.set_subtitle(esc(option))
+                ex.add_row(w)
+            self.page_words["xkb"] += [title.lower()] + [desc.lower() for _o, desc in options] + [o for o, _d in options]
+            g.add(ex)
+        p.add(g)
         return p
 
     # ---------- 音訊裝置 ----------
@@ -1517,6 +1560,12 @@ class Tuneup(Adw.Application):
         pending.add(loading)
         p.add(pending)
 
+        sources = group("軟體來源", "apt 從這些位置取得套件")
+        for src in system.apt_sources():
+            sources.add(row(src["uri"], f"{src['file']} · {src['suites']}", None, [] if src["enabled"] else [chip("已停用")], data=True))
+        if shutil.which("software-properties-gtk"):
+            sources.add(row("管理軟體來源", "開啟系統的「軟體與更新」", None, [btn("開啟", on_click=lambda: subprocess.Popen(["software-properties-gtk"]))]))
+        p.add(sources)
         history = group("更新紀錄", "來自 /var/log/apt/history.log")
         p.add(history)
 
@@ -1938,6 +1987,7 @@ class Tuneup(Adw.Application):
         self.stack.add_named(self.page_ext(), "ext")
         for i, (_name, _icon, groups) in enumerate(TWEAKS):
             self.stack.add_named(self.tweak_page(f"tw{i}", groups), f"tw{i}")
+        self.stack.add_named(self.page_xkb(), "xkb")
         self.stack.add_named(self.page_audio(), "audio")
         self.stack.add_named(self.page_startup(), "startup")
         self.stack.add_named(self.page_apps(), "apps")
@@ -2007,11 +2057,17 @@ class Tuneup(Adw.Application):
         w.get_native().get_renderer().render_texture(node, None).save_to_png(f"{self.shot_dir}/{name}.png")
         return True
 
-    def shoot(self, i):
+    def shoot(self, i, tries=0):
         ids = [x[0] for x in SIDEBAR if x]
         if i < len(ids):
             self.goto(ids[i])
-            GLib.timeout_add(400, lambda: (GLib.timeout_add(80, self.shoot, i + (1 if self.snap(f"{i:02d}-{ids[i]}") else 0)), False)[1])
+
+            def take():
+                # 螢幕關閉或鎖定時視窗不會被畫出來；重試幾次後就跳過這一頁，讓翻譯檢查仍能跑完
+                done = self.snap(f"{i:02d}-{ids[i]}") or tries >= 5
+                GLib.timeout_add(80, self.shoot, i + 1 if done else i, 0 if done else tries + 1)
+                return False
+            GLib.timeout_add(400, take)
         else:
             self.quit()
         return False

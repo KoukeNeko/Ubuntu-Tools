@@ -535,5 +535,18 @@
   "沒有更新紀錄": "No update history",
   "讀不到 apt 的紀錄檔，或還沒有任何紀錄": "The apt log could not be read, or it is empty",
   "已加入應用程式選單：{path}": "Added to the applications menu: {path}",
-  "Ubuntu 的調校、擴充功能與系統管理工具。每一次變更都看得見、退得回。": "Tweaks, extensions and system tools for Ubuntu. Every change is visible and reversible."
+  "Ubuntu 的調校、擴充功能與系統管理工具。每一次變更都看得見、退得回。": "Tweaks, extensions and system tools for Ubuntu. Every change is visible and reversible.",
+  "XKB 配置選項": "XKB layout options",
+  "apt 從這些位置取得套件": "apt gets packages from these locations",
+  "已停用": "Disabled",
+  "已啟用 {n} 項": "{n} enabled",
+  "立即生效，並在每次登入時維持；外接螢幕使用時很有用": "Applies immediately and at every login; useful with an external display",
+  "筆記型電腦": "Laptop",
+  "與 GNOME Tweaks 的「其他配置選項」相同；選項說明是系統提供的英文": "Same as Additional Layout Options in GNOME Tweaks; descriptions come from the system",
+  "軟體來源": "Software sources",
+  "選項": "Options",
+  "鍵盤配置選項": "Keyboard Layout Options",
+  "闔上螢幕時不暫停": "Don't suspend when the lid is closed",
+  "管理軟體來源": "Manage software sources",
+  "開啟系統的「軟體與更新」": "Opens the system's Software & Updates"
 }
