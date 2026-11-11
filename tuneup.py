@@ -125,6 +125,7 @@ VERSION = "0.1.0"
 AUTOSTART_DIR = Path(GLib.get_user_config_dir()) / "autostart"
 LAUNCHER = Path(GLib.get_user_data_dir()) / "applications" / "io.github.doeshing.Tuneup.desktop"
 MAX_IMPORT_BYTES = 1_000_000
+USER_THEMES_UUID = "user-theme@gnome-shell-extensions.gcampax.github.com"
 CARD_WIDTH = 200          # 市集格狀檢視的卡片寬度
 SIDE_COLUMN_WIDTH = 320   # 詳細頁右欄（下載與安裝）的寬度
 NARROW_DETAIL = "max-width: 800sp"  # 詳細頁的內容區比這個窄時，雙欄改成上下排列
@@ -611,6 +612,24 @@ class Tuneup(Adw.Application):
         r.connect("activated", lambda *_a: self.goto(target))
         return r
 
+    def refresh(self, page):
+        """內容有變動時更新畫面。使用者正在子頁面（市集、詳細頁）時不打斷他，等回到該頁的主畫面再更新。"""
+        nav = self.sub_navs.get(page)
+        if nav and nav.get_navigation_stack().get_n_items() > 1:
+            self.stale.add(page)
+        else:
+            self.reload(page)
+
+    def watch_nav(self, page, nav):
+        """記下這一頁的子頁面導覽；回到主畫面時，補做之前延後的更新。"""
+        self.sub_navs[page] = nav
+
+        def popped(*_a):
+            if page in self.stale and nav.get_navigation_stack().get_n_items() == 1:
+                self.stale.discard(page)
+                GLib.idle_add(lambda: self.reload(page) and False)
+        nav.connect("popped", popped)
+
     def reload(self, page=None):
         self.build_ui(page or self.stack.get_visible_child_name())
 
@@ -776,7 +795,7 @@ class Tuneup(Adw.Application):
         except GLib.Error as err:
             message = _("無法套用：{error}").format(error=err.message)
         # GNOME Shell 需要一點時間更新狀態，稍後再重新讀取
-        GLib.timeout_add(400, lambda: (self.reload("ext"), self.toast_raw(message), False)[2])
+        GLib.timeout_add(400, lambda: (self.refresh("ext"), self.toast_raw(message), False)[2])
 
     def set_master(self, enabled):
         if self.loading:
@@ -795,7 +814,7 @@ class Tuneup(Adw.Application):
             GLib.timeout_add(400, lambda: (self.reload("ext"), self.toast_raw(message), False)[2])
         self.confirm("解除安裝這個擴充功能？", _("{name} 的檔案會被移除，這個動作無法從歷史還原。").format(name=e["name"]), "解除安裝", run, destructive=True)
 
-    def install_extension(self, uuid, name, button):
+    def install_extension(self, uuid, name, button, page="ext"):
         """交給 GNOME Shell 下載安裝；Shell 會自己跳出確認視窗。"""
         button.set_sensitive(False)
         button.set_label(_("安裝中…"))
@@ -806,7 +825,8 @@ class Tuneup(Adw.Application):
             except GLib.Error as err:
                 outcome = err.message
             if outcome == "successful":
-                self.reload("ext")
+                button.set_label(_("已安裝"))
+                self.refresh(page)
                 self.toast_raw(_("已安裝 {name}").format(name=name))
             else:
                 button.set_sensitive(True)
@@ -1171,6 +1191,7 @@ class Tuneup(Adw.Application):
             g.add(r)
         p.add(g)
         nav.add(Adw.NavigationPage(title=_("擴充功能"), child=p))
+        self.watch_nav("ext", nav)
         return nav
 
     # ---------- 系統調校 ----------
@@ -1323,8 +1344,11 @@ class Tuneup(Adw.Application):
             self.reload("themes")
         self.confirm("移除這個主題？", _("「{name}」會移到垃圾桶。").format(name=theme["name"]), "移除", run, destructive=True)
 
-    def theme_installed(self, names, err):
-        self.reload("themes")
+    def theme_installed(self, names, err, button=None):
+        if button and not err:
+            button.set_label(_("已安裝"))
+            button.set_sensitive(False)
+        self.refresh("themes")
         if err:
             self.toast_raw(_("無法安裝：{error}").format(error=err))
         else:
@@ -1338,6 +1362,17 @@ class Tuneup(Adw.Application):
                 return  # 使用者取消
             in_background(lambda: market.install_archive(kind, path), self.theme_installed)
         Gtk.FileDialog().open(self.win, None, opened)
+
+    def user_themes_row(self):
+        """套用 Shell 主題需要 User Themes 擴充功能；這一列提供一鍵安裝或啟用。"""
+        ext = next((e for e in self.exts if e["uuid"] == USER_THEMES_UUID), None)
+        if ext:  # 已安裝但沒有啟用
+            b = btn("啟用", "suggested-action", on_click=lambda: (
+                self.toggle_extension(ext, True), GLib.timeout_add(600, lambda: self.reload("themes") and False)))
+            return row("需要啟用 User Themes 擴充功能", "已經安裝，啟用後就能套用 Shell 主題", Gtk.Image(icon_name="dialog-information-symbolic"), [b])
+        b = btn("安裝並啟用", "suggested-action")
+        b.connect("clicked", lambda button: self.install_extension(USER_THEMES_UUID, "User Themes", button, page="themes"))
+        return row("需要 User Themes 擴充功能", "從 extensions.gnome.org 安裝；GNOME Shell 會跳出確認視窗", Gtk.Image(icon_name="dialog-information-symbolic"), [b])
 
     def theme_row(self, kind, theme, current, usable):
         r = row(theme["name"], _("使用者安裝") if theme["user"] else _("系統內建"), None, data=True)
@@ -1368,9 +1403,11 @@ class Tuneup(Adw.Application):
         self.detail_header(left, item["previews"], item["name"], " · ".join(x for x in (item["author"], item["version"]) if x), item["description"][:1200])
         g = group("檔案", "這些是第三方上傳的檔案。Tuneup 會核對檔案完整性，並拒絕會寫到主題資料夾以外的壓縮檔")
         for f in item["files"]:
-            b = btn("安裝", on_click=lambda f=f: self.confirm(
+            b = btn("安裝")
+            b.connect("clicked", lambda button, f=f: self.confirm(
                 _("安裝 {name}？").format(name=f["name"]), _("來自 gnome-look.org，會解壓縮到你的主題資料夾。"), "安裝",
-                lambda: (self.toast("下載中…"), in_background(lambda: market.install_from_market(kind, f), self.theme_installed))))
+                lambda: (self.toast("下載中…"), in_background(lambda: market.install_from_market(kind, f),
+                                                          lambda names, err: self.theme_installed(names, err, button)))))
             g.add(row(f["name"], system.human(f["size"]) if f["size"] else None, None, [b], data=True))
         if not item["files"]:
             g.add(row("沒有可下載的檔案", "請到網頁上查看"))
@@ -1402,7 +1439,7 @@ class Tuneup(Adw.Application):
             g.add(r)
             g.add(row("從檔案安裝", "選擇 .tar.xz、.tar.gz 或 .zip 壓縮檔", None, [btn("選擇檔案", on_click=lambda kind=kind: self.install_theme_file(kind))]))
             if not usable:
-                g.add(row("需要 User Themes 擴充功能", "安裝並啟用後才能套用 Shell 主題", Gtk.Image(icon_name="dialog-information-symbolic")))
+                g.add(self.user_themes_row())
             for theme in themes:
                 if theme["user"] or theme["name"] == current:
                     g.add(self.theme_row(kind, theme, current, usable))
@@ -1415,6 +1452,7 @@ class Tuneup(Adw.Application):
             self.page_words["themes"] += [t["name"].lower() for t in themes]
             p.add(g)
         nav.add(Adw.NavigationPage(title=_("主題與圖示"), child=p))
+        self.watch_nav("themes", nav)
         return nav
 
     # ---------- 鍵盤配置選項 ----------
@@ -1609,7 +1647,7 @@ class Tuneup(Adw.Application):
         """確認後在背景執行 work() -> (結束碼, 輸出)，結束時重新載入 page 並回報。"""
         def finished(result, err):
             code = -1 if err else result[0]
-            self.reload(page)
+            self.refresh(page)
             if code == 0:
                 self.toast(done_message)
             elif code in system.PKEXEC_DISMISSED:
@@ -1825,6 +1863,7 @@ class Tuneup(Adw.Application):
             self.mark_rows(p)
         in_background(lambda: {"snaps": system.snaps(), "apt": system.apt_manual()}, fill)
         nav.add(Adw.NavigationPage(title=_("應用程式"), child=p))
+        self.watch_nav("apps", nav)
         return nav
 
     # ---------- 系統更新 ----------
@@ -2225,6 +2264,9 @@ class Tuneup(Adw.Application):
 
     def build_ui(self, page="dash"):
         """讀取系統目前的狀態並建立整個畫面；套用變更、重新整理與切換語言都走這裡。"""
+        store.forget_absent()  # 擴充功能可能剛裝好，它的設定要重新找
+        self.sub_navs = {}   # 頁面 id -> 該頁的 Adw.NavigationView
+        self.stale = set()   # 內容已變動、等使用者回到主畫面再更新的頁面
         self.key_rows = {}
         self.key_widgets = {}
         self.page_keys = {}

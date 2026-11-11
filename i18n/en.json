@@ -550,7 +550,6 @@
   "主題與圖示": "Themes & Icons",
   "使用中": "In use",
   "安裝、套用、移除圖示、游標與介面主題；套用會記入歷史": "Install, apply and remove icon, cursor and interface themes; applying is recorded in History",
-  "安裝並啟用後才能套用 Shell 主題": "Install and enable it to apply Shell themes",
   "安裝自己下載的擴充功能 .zip 檔": "Install an extension .zip you downloaded yourself",
   "市集": "Store",
   "從 gnome-look.org 瀏覽與安裝": "Browse and install from gnome-look.org",
@@ -589,5 +588,9 @@
   "改用格狀檢視": "Switch to grid view",
   "輸入關鍵字開始搜尋": "Type a keyword to search",
   "Snap 商店連不上時只會有 apt 的結果": "When the Snap store is unreachable only apt results appear",
-  "apt 與 Snap": "apt and Snap"
+  "apt 與 Snap": "apt and Snap",
+  "需要啟用 User Themes 擴充功能": "The User Themes extension needs to be enabled",
+  "已經安裝，啟用後就能套用 Shell 主題": "It is installed; enable it to apply Shell themes",
+  "安裝並啟用": "Install and Enable",
+  "從 extensions.gnome.org 安裝；GNOME Shell 會跳出確認視窗": "Installs from extensions.gnome.org; GNOME Shell will ask you to confirm"
 }
