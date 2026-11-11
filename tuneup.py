@@ -23,11 +23,12 @@ import shutil
 import subprocess
 import threading
 import urllib.parse
-import urllib.request
 from pathlib import Path
 
 import audio
+import market
 import store
+from market import ICON_DIRS, THEME_DIRS, dirs_with, icon_themes
 import system
 
 I18N_DIR = Path(__file__).resolve().parent / "i18n"
@@ -99,6 +100,7 @@ row .subtitle{line-height:18px}
 row.two-line box.header{min-height:64px}
 .diff{font-family:monospace;font-size:small;padding:12px}
 .navigation-sidebar row.sep{background:none;min-height:0;padding:0}
+.thumb{border-radius:8px}
 .swatch{min-width:24px;min-height:24px;border-radius:99px;padding:0;border:2px solid transparent}
 .swatch:checked{border-color:@window_fg_color}
 """
@@ -166,44 +168,6 @@ def in_background(work, done):
             result, err = None, str(e)
         GLib.idle_add(lambda: done(result, err) and False)
     threading.Thread(target=run, daemon=True).start()
-
-
-def fetch_json(url):
-    if not url.startswith("https://"):
-        raise ValueError("only https:// URLs are allowed")
-    req = urllib.request.Request(url, headers={"User-Agent": "Tuneup"})
-    with urllib.request.urlopen(req, timeout=8) as r:
-        body = r.read(MAX_IMPORT_BYTES + 1)
-    if len(body) > MAX_IMPORT_BYTES:
-        raise ValueError("response too large")
-    return json.loads(body)
-
-
-def query_extensions(shell_major, search):
-    q = urllib.parse.urlencode({"sort": "popularity", "shell_version": shell_major, "page": 1, "search": search})
-    return fetch_json(f"https://extensions.gnome.org/extension-query/?{q}").get("extensions", [])[:15]
-
-
-def dirs_with(bases, marker):
-    """bases 底下含有 marker 的子資料夾名稱，用來列出已安裝的主題。"""
-    names = set()
-    for base in bases:
-        try:
-            for d in os.scandir(os.path.expanduser(base)):
-                if d.is_dir() and d.name != "default" and os.path.exists(os.path.join(d.path, marker)):
-                    names.add(d.name)
-        except OSError:
-            pass
-    return [(n, n) for n in sorted(names, key=str.lower)]
-
-
-ICON_DIRS = ("/usr/share/icons", "~/.local/share/icons", "~/.icons")
-THEME_DIRS = ("/usr/share/themes", "~/.local/share/themes", "~/.themes")
-
-
-def icon_themes():
-    cursors_only = {n for n, _v in dirs_with(ICON_DIRS, "cursors")} - {n for n, _v in dirs_with(ICON_DIRS, "scalable")} - {n for n, _v in dirs_with(ICON_DIRS, "16x16")}
-    return [(n, v) for n, v in dirs_with(ICON_DIRS, "index.theme") if n not in cursors_only]
 
 
 # ---------- 調校項定義 ----------
@@ -452,6 +416,7 @@ MODULES = [
 ]
 # 接在某個調校分類後面的獨立頁面
 EXTRA_PAGES = {
+    "外觀": [("themes", "主題與圖示", "preferences-desktop-theme-symbolic")],
     "鍵盤與滑鼠": [("xkb", "鍵盤配置選項", "preferences-desktop-keyboard-symbolic")],
     "音效": [("audio", "音訊裝置", "audio-card-symbolic")],
 }
@@ -765,7 +730,8 @@ class Tuneup(Adw.Application):
     # ---------- 擴充功能 ----------
     def sub_page(self, title, content):
         tv = Adw.ToolbarView()
-        tv.add_top_bar(Adw.HeaderBar())
+        # 外層已經有視窗按鈕，子頁面的標題列只留返回鍵與標題
+        tv.add_top_bar(Adw.HeaderBar(show_start_title_buttons=False, show_end_title_buttons=False))
         tv.set_content(content)
         self.mark_rows(tv)
         return Adw.NavigationPage(title=title, child=tv)
@@ -890,52 +856,148 @@ class Tuneup(Adw.Application):
         up.add(g)
         self.ext_nav.push(self.sub_page(_("更新"), up))
 
-    def show_explore(self):
-        dp = Adw.PreferencesPage()
+    # ---------- 市集（擴充功能與主題共用） ----------
+    def remote_picture(self, url, width, height, fit=Gtk.ContentFit.COVER):
+        """先佔位，圖片在背景下載好再顯示；載不到或格式不支援就維持空白。"""
+        pic = Gtk.Picture(content_fit=fit, width_request=width, height_request=height, can_shrink=True,
+                          halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER, overflow=Gtk.Overflow.HIDDEN)
+        pic.add_css_class("thumb")
+
+        def loaded(data, _err):
+            if data:
+                try:
+                    pic.set_paintable(Gdk.Texture.new_from_bytes(GLib.Bytes.new(data)))
+                except GLib.Error:
+                    pass  # 系統沒有這種圖片格式的解碼器
+        if url:
+            in_background(lambda: market.fetch_image(url), loaded)
+        if width > 0:  # 縮圖：不論原圖比例，都固定佔這個寬度，清單的文字才會對齊
+            return Adw.Clamp(maximum_size=width, tightening_threshold=width, width_request=width, child=pic, valign=Gtk.Align.CENTER)
+        return pic
+
+    def market_page(self, nav, title, source, sorts, search, make_row):
+        """市集清單頁：搜尋、排序、載入更多。search(關鍵字, 排序索引, 頁碼) -> (項目, 是否還有下一頁)。"""
+        page = Adw.PreferencesPage()
         g = group()
-        entry = Adw.EntryRow(title=_("搜尋 extensions.gnome.org"), show_apply_button=True)
+        entry = Adw.EntryRow(title=_("搜尋 {source}").format(source=source), show_apply_button=True)
         g.add(entry)
-        dp.add(g)
-        results = group("熱門", _("支援 GNOME {v} 的擴充功能").format(v=self.shell_version))
-        dp.add(results)
-        shown = []
+        sort = Adw.ComboRow(title=_m("排序"), model=Gtk.StringList.new([_(x) for x in sorts]))
+        g.add(sort)
+        page.add(g)
+        results = group("結果")
+        page.add(results)
+        state = {"page": 0, "rows": [], "count": 0, "serial": 0}
+
+        def clear():
+            for r in state["rows"]:
+                results.remove(r)
+            state["rows"] = []
+
+        def add(r):
+            state["rows"].append(r)
+            results.add(r)
+
+        def load(reset):
+            if reset:
+                clear()
+                state["page"], state["count"] = 0, 0
+            elif state["rows"]:
+                results.remove(state["rows"].pop())  # 拿掉「載入更多」
+            add(row("載入中…"))
+            state["serial"] += 1
+            serial, text, order, number = state["serial"], entry.get_text().strip(), sort.get_selected(), state["page"]
+
+            def loaded(found, err):
+                if serial != state["serial"]:
+                    return  # 使用者已經發出新的搜尋，丟掉舊結果
+                results.remove(state["rows"].pop())
+                items, more = found or ([], False)
+                if err:
+                    add(row(_("無法連線到 {source}").format(source=source), err, Gtk.Image(icon_name="network-offline-symbolic"), data=True))
+                elif not items and not state["count"]:
+                    add(row("找不到符合的項目", "換個關鍵字試試"))
+                for item in items:
+                    add(make_row(item, state["count"]))
+                    state["count"] += 1
+                if more:
+                    r = row("載入更多", None, None, [btn("載入", on_click=lambda: (state.__setitem__("page", state["page"] + 1), load(False)))])
+                    add(r)
+                self.mark_rows(results)
+            in_background(lambda: search(text, order, number), loaded)
+
+        entry.connect("apply", lambda *_a: load(True))
+        entry.connect("entry-activated", lambda *_a: load(True))
+        sort.connect("notify::selected", lambda *_a: load(True))
+        load(True)
+        nav.push(self.sub_page(title, page))
+
+    def open_uri(self, uri):
+        Gtk.UriLauncher(uri=uri).launch(self.win, None, None)
+
+    def detail_header(self, pg, preview, name, sub, tile_index):
+        if preview:
+            g = group()
+            g.add(self.remote_picture(preview, -1, 270, Gtk.ContentFit.CONTAIN))  # 不設寬度，避免把頁面最小寬度撐過 400
+            pg.add(g)
+        g = group()
+        g.add(row(name, sub, tile(name, tile_index), data=True))
+        return g
+
+    def show_explore(self):
         installed = {e["uuid"] for e in self.exts}
 
-        def fill(items, err):
-            for r in shown:
-                results.remove(r)
-            shown.clear()
-            if err:
-                shown.append(row(_("無法連線到 extensions.gnome.org"), err, Gtk.Image(icon_name="network-offline-symbolic"), data=True))
-            elif not items:
-                shown.append(row("找不到符合的擴充功能", "換個關鍵字試試"))
-            for i, d in enumerate(items or []):
-                uuid, name = d.get("uuid", ""), d.get("name", "")
-                if uuid in installed:
-                    b = btn("已安裝")
-                    b.set_sensitive(False)
-                else:
-                    b = btn("安裝")
-                    b.connect("clicked", lambda button, uuid=uuid, name=name: self.install_extension(uuid, name, button))
-                desc = (d.get("description") or "").strip().split("\n")[0]
-                shown.append(row(name, desc, tile(name, i), [b], data=True))
-            for r in shown:
-                results.add(r)
-            self.mark_rows(results)
+        def search(text, order, number):
+            items, pages = market.search_extensions(self.shell_version, text, market.EGO_SORTS[order], number + 1)
+            return items, number + 1 < pages
 
-        def search(*_a):
-            text = entry.get_text().strip()
-            results.set_title(_m("搜尋結果") if text else _m("熱門"))
-            fill([], None)
-            results.remove(shown.pop())
-            shown.append(row("載入中…"))
-            results.add(shown[0])
-            in_background(lambda: query_extensions(self.shell_version, text), fill)
+        def make_row(item, index):
+            r = row(item["name"], item["description"].split("\n")[0], tile(item["name"], index),
+                    ([chip("已安裝", "success")] if item["uuid"] in installed else [value(f"{item['downloads']:,}")]) + [self.next_icon()], data=True)
+            r.set_activatable(True)
+            r.connect("activated", lambda *_a: self.explore_detail(item, index, item["uuid"] in installed))
+            return r
+        self.market_page(self.ext_nav, _("探索擴充功能"), "extensions.gnome.org", ["熱門", "最新", "下載次數", "名稱"], search, make_row)
 
-        entry.connect("apply", search)
-        entry.connect("entry-activated", search)
-        search()
-        self.ext_nav.push(self.sub_page(_("探索擴充功能"), dp))
+    def explore_detail(self, item, index, installed):
+        pg = Adw.PreferencesPage()
+        g = self.detail_header(pg, item["screenshot"], item["name"], item["uuid"], index)
+        if item["description"]:
+            d = Adw.ActionRow(title=esc(item["description"]), title_lines=0)
+            d.add_css_class("wrap")
+            g.add(d)
+        pg.add(g)
+        g = group()
+        if installed:
+            g.add(row("已安裝", "可以在「擴充功能」頁管理", Gtk.Image(icon_name="emblem-ok-symbolic")))
+        else:
+            b = btn("安裝", "suggested-action")
+            b.connect("clicked", lambda button: self.install_extension(item["uuid"], item["name"], button))
+            g.add(row("安裝這個擴充功能", "GNOME Shell 會跳出確認視窗", None, [b]))
+        pg.add(g)
+        g = group("資訊")
+        g.add(row(_("作者"), item["creator"], data=True))
+        g.add(row(_("下載次數"), f"{item['downloads']:,}", data=True))
+        if item["page"]:
+            g.add(row("extensions.gnome.org", item["page"], None, [btn("開啟", on_click=lambda: self.open_uri(item["page"]))], data=True))
+        if item["homepage"].startswith("https://"):
+            g.add(row(_("專案首頁"), item["homepage"], None, [btn("開啟", on_click=lambda: self.open_uri(item["homepage"]))], data=True))
+        pg.add(g)
+        self.ext_nav.push(self.sub_page(item["name"], pg))
+
+    def install_extension_file(self):
+        """安裝使用者自己下載的擴充功能壓縮檔。"""
+        def opened(dialog, result):
+            try:
+                path = dialog.open_finish(result).get_path()
+            except GLib.Error:
+                return  # 使用者取消
+            code, out = system.run(["gnome-extensions", "install", "--force", path])
+            if code == 0:
+                self.reload("ext")
+                self.toast("已安裝；登出再登入後才會出現在清單中")
+            else:
+                self.toast_raw(_("無法套用：{error}").format(error=(out.strip().splitlines() or [str(code)])[-1]))
+        Gtk.FileDialog(default_filter=Gtk.FileFilter(patterns=["*.zip"])).open(self.win, None, opened)
 
     def page_ext(self):
         nav = Adw.NavigationView()
@@ -957,10 +1019,11 @@ class Tuneup(Adw.Application):
         r.set_activatable(True)
         r.connect("activated", lambda *_a: self.show_updates())
         g.add(r)
-        r = row("探索", "從 extensions.gnome.org 搜尋與安裝", None, [self.next_icon()])
+        r = row("市集", "瀏覽、搜尋 extensions.gnome.org 並安裝", None, [self.next_icon()])
         r.set_activatable(True)
         r.connect("activated", lambda *_a: self.show_explore())
         g.add(r)
+        g.add(row("從檔案安裝", "安裝自己下載的擴充功能 .zip 檔", None, [btn("選擇檔案", on_click=self.install_extension_file)]))
         p.add(g)
 
         g = group("已安裝")
@@ -1118,6 +1181,122 @@ class Tuneup(Adw.Application):
         w.connect("notify::active", toggled)
         g.add(w)
         return g
+
+    # ---------- 主題與圖示 ----------
+    THEME_TITLES = {"icons": "圖示主題", "cursors": "游標主題", "gtk": "應用程式主題", "shell": "Shell 主題"}
+
+    def apply_theme(self, kind, name):
+        schema, key = market.KINDS[kind]["setting"]
+        text = store.to_variant(schema, key, name).print_(False)
+        self.commit("tweak", [store.gsettings_change(schema, key, text)], "已套用，可在「歷史」還原", page="themes")
+
+    def remove_theme(self, theme):
+        def run():
+            try:
+                market.remove_theme(theme["path"])
+            except (ValueError, GLib.Error) as err:
+                return self.toast_raw(_("無法套用：{error}").format(error=str(err)))
+            self.reload("themes")
+        self.confirm("移除這個主題？", _("「{name}」會移到垃圾桶。").format(name=theme["name"]), "移除", run, destructive=True)
+
+    def theme_installed(self, names, err):
+        self.reload("themes")
+        if err:
+            self.toast_raw(_("無法安裝：{error}").format(error=err))
+        else:
+            self.toast_raw(_("已安裝 {names}，尚未套用").format(names=", ".join(names)))
+
+    def install_theme_file(self, kind):
+        def opened(dialog, result):
+            try:
+                path = dialog.open_finish(result).get_path()
+            except GLib.Error:
+                return  # 使用者取消
+            in_background(lambda: market.install_archive(kind, path), self.theme_installed)
+        Gtk.FileDialog().open(self.win, None, opened)
+
+    def theme_row(self, kind, theme, current, usable):
+        r = row(theme["name"], _("使用者安裝") if theme["user"] else _("系統內建"), None, data=True)
+        if theme["name"] == current:
+            r.add_suffix(chip("使用中", "success"))
+        else:
+            b = btn("套用", on_click=lambda: self.apply_theme(kind, theme["name"]))
+            b.set_sensitive(usable)
+            r.add_suffix(b)
+        if theme["user"] and theme["name"] != current:
+            r.add_suffix(btn(None, "flat", "user-trash-symbolic", on_click=lambda: self.remove_theme(theme)))
+        return r
+
+    def show_theme_store(self, kind):
+        def search(text, order, number):
+            items, total = market.search_themes(kind, text, market.OCS_SORTS[order], number)
+            return items, (number + 1) * market.PAGE_SIZE < total
+
+        def make_row(item, index):
+            r = row(item["name"], item["author"], self.remote_picture(item["preview"], 64, 44), [value(f"{item['downloads']:,}"), self.next_icon()], data=True)
+            r.set_activatable(True)
+            r.connect("activated", lambda *_a: self.theme_detail(kind, item, index))
+            return r
+        self.market_page(self.theme_nav, _(self.THEME_TITLES[kind]), "gnome-look.org", ["下載次數", "最新", "評分", "名稱"], search, make_row)
+
+    def theme_detail(self, kind, item, index):
+        pg = Adw.PreferencesPage()
+        g = self.detail_header(pg, item["preview"], item["name"], " · ".join(x for x in (item["author"], item["version"]) if x), index)
+        if item["description"]:
+            d = Adw.ActionRow(title=esc(item["description"][:1200]), title_lines=0)
+            d.add_css_class("wrap")
+            g.add(d)
+        pg.add(g)
+        g = group("檔案", "這些是第三方上傳的檔案。Tuneup 會核對檔案完整性，並拒絕會寫到主題資料夾以外的壓縮檔")
+        for f in item["files"]:
+            b = btn("安裝", on_click=lambda f=f: self.confirm(
+                _("安裝 {name}？").format(name=f["name"]), _("來自 gnome-look.org，會解壓縮到你的主題資料夾。"), "安裝",
+                lambda: (self.toast("下載中…"), in_background(lambda: market.install_from_market(kind, f), self.theme_installed))))
+            g.add(row(f["name"], system.human(f["size"]) if f["size"] else None, None, [b], data=True))
+        if not item["files"]:
+            g.add(row("沒有可下載的檔案", "請到網頁上查看"))
+        pg.add(g)
+        g = group("資訊")
+        g.add(row(_("下載次數"), f"{item['downloads']:,}", data=True))
+        g.add(row(_("評分"), f"{item['score']}%", data=True))
+        if item["page"].startswith("https://"):
+            g.add(row("gnome-look.org", item["page"], None, [btn("開啟", on_click=lambda: self.open_uri(item["page"]))], data=True))
+        pg.add(g)
+        self.theme_nav.push(self.sub_page(item["name"], pg))
+
+    def page_themes(self):
+        nav = Adw.NavigationView()
+        self.theme_nav = nav
+        p = Adw.PreferencesPage()
+        g = group()
+        g.add(row("主題與圖示", "安裝、套用、移除圖示、游標與介面主題；套用會記入歷史", Gtk.Image(icon_name="preferences-desktop-theme-symbolic")))
+        p.add(g)
+        for kind, title in self.THEME_TITLES.items():
+            schema, key = market.KINDS[kind]["setting"]
+            usable = store.has_key(schema, key)
+            current = store.settings(schema).get_string(key) if usable else None
+            themes = market.installed_themes(kind)
+            g = group(title)
+            r = row("市集", "從 gnome-look.org 瀏覽與安裝", None, [self.next_icon()])
+            r.set_activatable(True)
+            r.connect("activated", lambda *_a, kind=kind: self.show_theme_store(kind))
+            g.add(r)
+            g.add(row("從檔案安裝", "選擇 .tar.xz、.tar.gz 或 .zip 壓縮檔", None, [btn("選擇檔案", on_click=lambda kind=kind: self.install_theme_file(kind))]))
+            if not usable:
+                g.add(row("需要 User Themes 擴充功能", "安裝並啟用後才能套用 Shell 主題", Gtk.Image(icon_name="dialog-information-symbolic")))
+            for theme in themes:
+                if theme["user"] or theme["name"] == current:
+                    g.add(self.theme_row(kind, theme, current, usable))
+            builtin = [t for t in themes if not t["user"] and t["name"] != current]
+            if builtin:
+                ex = Adw.ExpanderRow(title=_m("系統內建"), subtitle=esc(_("{n} 個").format(n=len(builtin))))
+                for theme in builtin:
+                    ex.add_row(self.theme_row(kind, theme, current, usable))
+                g.add(ex)
+            self.page_words["themes"] += [t["name"].lower() for t in themes]
+            p.add(g)
+        nav.add(Adw.NavigationPage(title=_("主題與圖示"), child=p))
+        return nav
 
     # ---------- 鍵盤配置選項 ----------
     def page_xkb(self):
@@ -1699,7 +1878,7 @@ class Tuneup(Adw.Application):
         Gtk.FileDialog().open(self.win, None, opened)
 
     def import_url(self):
-        self.prompt("從網址匯入", "https://…", "匯入", lambda url: in_background(lambda: fetch_json(url), self.add_imported))
+        self.prompt("從網址匯入", "https://…", "匯入", lambda url: in_background(lambda: market.fetch_json(url, MAX_IMPORT_BYTES), self.add_imported))
 
     def page_pf(self):
         p = Adw.PreferencesPage()
@@ -1987,6 +2166,7 @@ class Tuneup(Adw.Application):
         self.stack.add_named(self.page_ext(), "ext")
         for i, (_name, _icon, groups) in enumerate(TWEAKS):
             self.stack.add_named(self.tweak_page(f"tw{i}", groups), f"tw{i}")
+        self.stack.add_named(self.page_themes(), "themes")
         self.stack.add_named(self.page_xkb(), "xkb")
         self.stack.add_named(self.page_audio(), "audio")
         self.stack.add_named(self.page_startup(), "startup")
