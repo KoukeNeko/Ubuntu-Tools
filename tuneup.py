@@ -648,8 +648,37 @@ class Tuneup(Adw.Application):
                 GLib.idle_add(lambda: self.reload(page) and False)
         nav.connect("popped", popped)
 
+    def page_scroller(self):
+        """目前頁面的捲動區（子頁面導覽時取最上層那一頁的）。"""
+        def first_scroller(w):
+            c = w.get_first_child()
+            while c:
+                if isinstance(c, Gtk.ScrolledWindow):
+                    return c
+                found = first_scroller(c)
+                if found:
+                    return found
+                c = c.get_next_sibling()
+            return None
+        child = self.stack.get_visible_child()
+        return first_scroller(child.get_visible_page() if isinstance(child, Adw.NavigationView) else child)
+
     def reload(self, page=None):
-        self.build_ui(page or self.stack.get_visible_child_name())
+        """重建畫面。留在同一頁時保留捲動位置，使用者才不會在按下按鈕後被帶回頁首。"""
+        current = self.stack.get_visible_child_name()
+        page = page or current
+        scroller = self.page_scroller() if page == current else None
+        offset = scroller.get_vadjustment().get_value() if scroller else 0
+        self.build_ui(page)
+        if offset:
+            def restore(tries=0):
+                adj = self.page_scroller().get_vadjustment()
+                if adj.get_upper() - adj.get_page_size() >= offset or tries >= 20:  # 內容可能還在排版或背景載入
+                    adj.set_value(offset)
+                    return False
+                GLib.timeout_add(50, restore, tries + 1)
+                return False
+            GLib.idle_add(restore)
 
     def ext_states(self):
         return {e["uuid"]: e["state"] == EXT_STATE_ACTIVE for e in self.exts}
