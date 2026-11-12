@@ -34,7 +34,8 @@ IF = "org.gnome.desktop.interface"
 # 主題種類：gnome-look 的分類編號、搜尋的資料夾、安裝位置、辨識用的檔案或資料夾、對應的設定
 KINDS = {
     "icons": {"category": 132, "dirs": ICON_DIRS, "install": HOME_DATA / "icons", "markers": ("index.theme",), "setting": (IF, "icon-theme")},
-    "cursors": {"category": 107, "dirs": ICON_DIRS, "install": HOME_DATA / "icons", "markers": ("cursors",), "setting": (IF, "cursor-theme")},
+    # X11 程式（libXcursor）只找 ~/.icons 與 /usr/share/icons，裝在 ~/.local/share/icons 會退回內建的小游標
+    "cursors": {"category": 107, "dirs": ICON_DIRS, "install": Path.home() / ".icons", "markers": ("cursors",), "setting": (IF, "cursor-theme")},
     "gtk": {"category": 135, "dirs": THEME_DIRS, "install": HOME_DATA / "themes", "markers": ("gtk-3.0", "gtk-4.0"), "setting": (IF, "gtk-theme")},
     "shell": {"category": 134, "dirs": THEME_DIRS, "install": HOME_DATA / "themes", "markers": ("gnome-shell",),
               "setting": ("org.gnome.shell.extensions.user-theme", "name")},
