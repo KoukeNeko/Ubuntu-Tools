@@ -131,6 +131,8 @@ MAGIC_LAMP_UUID = "compiz-alike-magic-lamp-effect@hermes83.github.com"
 # Dhruva（GPL-3.0，https://github.com/NarkAgni/dhruva）以 git submodule 隨程式發佈，
 # 安裝時複製到使用者的擴充功能資料夾。它的設定由它自己的偏好設定視窗處理。
 DHRUVA_UUID = "dhruva@narkagni"
+# Dhruva 只會隱藏 GNOME 內建的 Dash；Ubuntu Dock 得另外停用，否則會同時出現兩個 Dock。
+UBUNTU_DOCK_UUID = "ubuntu-dock@ubuntu.com"
 DHRUVA_SOURCE = Path(__file__).resolve().parent / "extension" / DHRUVA_UUID
 DHRUVA_TARGET = store.EXTENSION_DIRS[0] / DHRUVA_UUID
 DHRUVA_SKIP = (".git", "media", "docs", "tests", "manage.sh")  # 執行時用不到的內容不安裝
@@ -866,8 +868,12 @@ class Tuneup(Adw.Application):
         if self.loading or want == (e["state"] == EXT_STATE_ACTIVE):
             return
         message = _("已啟用 {name}").format(name=e["name"]) if want else _("已停用 {name}").format(name=e["name"])
+        changes = [store.extension_change(e["uuid"], e["name"], not want, want)]
+        if want and e["uuid"] == DHRUVA_UUID:
+            changes += [store.extension_change(d["uuid"], d["name"], True, False)
+                        for d in self.exts if d["uuid"] == UBUNTU_DOCK_UUID and d["state"] == EXT_STATE_ACTIVE]
         try:
-            store.apply("extension", [store.extension_change(e["uuid"], e["name"], not want, want)])
+            store.apply("extension", changes)
         except GLib.Error as err:
             message = _("無法套用：{error}").format(error=err.message)
         # GNOME Shell 需要一點時間更新狀態，稍後再重新讀取
