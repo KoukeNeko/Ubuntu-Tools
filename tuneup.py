@@ -113,6 +113,11 @@ row .subtitle{line-height:18px}
 row.two-line box.header{min-height:64px}
 .diff{font-family:monospace;font-size:small;padding:12px}
 .navigation-sidebar row.sep{background:none;min-height:0;padding:0}
+/* 側邊欄模糊：視窗本身透明，只有側邊欄透出後方；頁面補回底色，視窗變窄、側邊欄收成一頁時仍不透明 */
+window.glass{background:none}
+window.glass navigation-view-page{background-color:var(--window-bg-color)}
+window.glass .sidebar-pane{background-color:color-mix(in srgb,var(--sidebar-bg-color) 55%,transparent)}
+window.glass .sidebar-pane navigation-view-page{background:none}
 .thumb{border-radius:8px}
 .market-card{padding:6px}
 .swatch{min-width:24px;min-height:24px;border-radius:99px;padding:0;border:2px solid transparent}
@@ -124,7 +129,8 @@ row.two-line box.header{min-height:64px}
 EXT_STATE_ACTIVE, EXT_STATE_ERROR, EXT_STATE_OUT_OF_DATE = 1, 3, 4  # 取自 GNOME Shell 的 ExtensionState
 VERSION = "0.1.0"
 AUTOSTART_DIR = Path(GLib.get_user_config_dir()) / "autostart"
-LAUNCHER = Path(GLib.get_user_data_dir()) / "applications" / "io.github.doeshing.Tuneup.desktop"
+APP_ID = "io.github.doeshing.Tuneup"
+LAUNCHER = Path(GLib.get_user_data_dir()) / "applications" / f"{APP_ID}.desktop"
 MAX_IMPORT_BYTES = 1_000_000
 USER_THEMES_UUID = "user-theme@gnome-shell-extensions.gcampax.github.com"
 MAGIC_LAMP_UUID = "compiz-alike-magic-lamp-effect@hermes83.github.com"
@@ -599,7 +605,7 @@ def enter_safe_mode():
 
 class Tuneup(Adw.Application):
     def __init__(self, shot_dir=None, lang=None):
-        super().__init__(application_id="io.github.doeshing.Tuneup")
+        super().__init__(application_id=APP_ID)
         self.shot_dir = shot_dir
         self.lang_pref = lang or read_pref()  # --lang 只影響這次執行，不會存檔
         load_lang(self.lang_pref)
@@ -1471,38 +1477,53 @@ class Tuneup(Adw.Application):
         g.add(self.extension_switch(MAGIC_LAMP_UUID, "最小化精靈效果", "Compiz alike magic lamp effect", DOCK_PAGE))
         return g
 
+    def blur_behind(self, wm_class):
+        """Blur my Shell 是否正在模糊這個應用程式視窗的後方。"""
+        ext = next((x for x in self.exts if x["uuid"] == BLUR_UUID), None)
+        if not ext or ext["state"] != EXT_STATE_ACTIVE or not store.has_key(BLUR_APPS, "whitelist"):
+            return False
+        blur = store.settings(BLUR_APPS)
+        return blur.get_boolean("blur") and wm_class in blur.get_strv("whitelist")
+
+    def set_glass(self, on):
+        """自己的側邊欄：視窗加上 .glass 後，CSS 讓側邊欄透出後方的模糊。"""
+        (self.win.add_css_class if on else self.win.remove_css_class)("glass")
+
     def sidebar_blur_group(self):
-        """側邊欄的樣式寫在 gtk.css，不是 gsettings，所以和闔上螢幕一樣不走「未套用」流程。"""
+        """側邊欄的樣式不是 gsettings，所以和闔上螢幕一樣不走「未套用」流程。"""
         g = group("側邊欄")
-        title, name = "檔案的側邊欄模糊", "Blur my Shell"
-        ext = next((e for e in self.exts if e["uuid"] == BLUR_UUID), None)
+        name = "Blur my Shell"
+        ext = next((x for x in self.exts if x["uuid"] == BLUR_UUID), None)
         if not ext or not store.has_key(BLUR_APPS, "whitelist"):
-            g.add(self.extension_switch(BLUR_UUID, title, name, WINDOW_PAGE))
+            g.add(self.extension_switch(BLUR_UUID, "側邊欄模糊", name, WINDOW_PAGE))
             return g
         blur = store.settings(BLUR_APPS)
-        active = (ext["state"] == EXT_STATE_ACTIVE and blur.get_boolean("blur")
-                  and FILES_WM_CLASS in blur.get_strv("whitelist") and system.sidebar_css_enabled())
-        w = Adw.SwitchRow(title=_m(title), subtitle=esc(name), active=active)
 
-        def toggled(row_, _p):
-            on = row_.get_active()
-            apps = [a for a in blur.get_strv("whitelist") if a != FILES_WM_CLASS] + ([FILES_WM_CLASS] if on else [])
-            wanted = {"whitelist": apps}
-            if on:
-                # 不透明度交給 gtk.css，Blur my Shell 不再把整個視窗調淡
-                wanted.update({"blur": True, "opacity": 255, "dynamic-opacity": False})
-            changes = [store.gsettings_change(BLUR_APPS, key, store.to_variant(BLUR_APPS, key, value).print_(False))
-                       for key, value in wanted.items()]
-            if on and ext["state"] != EXT_STATE_ACTIVE:
-                changes.append(store.extension_change(BLUR_UUID, ext["name"], False, True))
-            try:
-                system.set_sidebar_css(on)
-                store.apply("tweak", changes)
-                self.toast("重新開啟「檔案」後生效")
-            except (OSError, GLib.Error) as err:
-                self.toast_raw(_("無法套用：{error}").format(error=str(err)))
-        w.connect("notify::active", toggled)
-        g.add(w)
+        def add(title, wm_class, active, set_style, done):
+            w = Adw.SwitchRow(title=_m(title), subtitle=esc(name), active=active)
+
+            def toggled(row_, _p):
+                on = row_.get_active()
+                wanted = {"whitelist": [a for a in blur.get_strv("whitelist") if a != wm_class] + ([wm_class] if on else [])}
+                if on:
+                    # 不透明度交給樣式，Blur my Shell 不再把整個視窗調淡
+                    wanted.update({"blur": True, "opacity": 255, "dynamic-opacity": False})
+                changes = [store.gsettings_change(BLUR_APPS, key, store.to_variant(BLUR_APPS, key, value).print_(False))
+                           for key, value in wanted.items()]
+                if on and ext["state"] != EXT_STATE_ACTIVE:
+                    changes.append(store.extension_change(BLUR_UUID, ext["name"], False, True))
+                try:
+                    set_style(on)
+                    store.apply("tweak", changes)
+                    self.toast(done)
+                except (OSError, GLib.Error) as err:
+                    self.toast_raw(_("無法套用：{error}").format(error=str(err)))
+            w.connect("notify::active", toggled)
+            g.add(w)
+
+        add("檔案的側邊欄模糊", FILES_WM_CLASS, self.blur_behind(FILES_WM_CLASS) and system.sidebar_css_enabled(),
+            system.set_sidebar_css, "重新開啟「檔案」後生效")
+        add("Tuneup 的側邊欄模糊", APP_ID, self.blur_behind(APP_ID), self.set_glass, "已變更")
         return g
 
     def lid_group(self):
@@ -2545,6 +2566,7 @@ class Tuneup(Adw.Application):
         self.add_actions()
         self.win = Adw.ApplicationWindow(application=self, default_width=1100, default_height=720, title="Tuneup")
         self.build_ui()
+        self.set_glass(self.blur_behind(APP_ID))
         self.win.present()
         if self.shot_dir:
             GLib.timeout_add(900, self.shoot, 0)
