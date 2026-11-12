@@ -575,9 +575,13 @@ def when(timestamp):
 def install_launcher():
     """在使用者的應用程式選單加入 Tuneup，指向目前這份程式的位置。"""
     LAUNCHER.parent.mkdir(parents=True, exist_ok=True)
+    command = f"python3 {Path(__file__).resolve()}"
     LAUNCHER.write_text("[Desktop Entry]\nType=Application\nName=Tuneup\nComment=Tweaks, extensions and system tools for Ubuntu\n"
-                        f"Exec=python3 {Path(__file__).resolve()}\nIcon=preferences-system\nTerminal=false\nCategories=Settings;System;\n"
-                        "StartupWMClass=io.github.doeshing.Tuneup\n")
+                        f"Exec={command}\nIcon=preferences-system\nTerminal=false\nCategories=Settings;System;\n"
+                        "StartupWMClass=io.github.doeshing.Tuneup\nActions=safe-mode;\n\n"
+                        # 在圖示上按右鍵就能暫停所有擴充功能，不必先打開 Tuneup 的視窗
+                        "[Desktop Action safe-mode]\nName=Pause All Extensions\nName[zh_TW]=暫停所有擴充功能\n"
+                        f"Exec={command} --safe-mode\n")
     return LAUNCHER
 
 
@@ -585,7 +589,10 @@ def enter_safe_mode():
     """不開視窗，直接暫停所有擴充功能；擴充功能讓桌面無法使用時，可從文字終端機執行。"""
     text = store.to_variant(*store.MASTER, True).print_(False)
     done = store.apply("tweak", [store.gsettings_change(*store.MASTER, text)])
-    print("All extensions are now paused. Undo it from History in Tuneup." if done else "Extensions were already paused.")
+    message = "All extensions are now paused. Undo it from History in Tuneup." if done else "Extensions were already paused."
+    print(message)
+    # 從選單或圖示的右鍵動作執行時沒有終端機，改用桌面通知回報
+    subprocess.run(["notify-send", "--app-name=Tuneup", "Tuneup", message], check=False)
 
 
 class Tuneup(Adw.Application):
@@ -816,6 +823,7 @@ class Tuneup(Adw.Application):
         p.add(g)
 
         g = group("快速開關")
+        g.add(self.master_row("dash"))
         for item in QUICK:
             w = self.tweak_row(item)
             if w:
@@ -857,12 +865,20 @@ class Tuneup(Adw.Application):
         # GNOME Shell 需要一點時間更新狀態，稍後再重新讀取
         GLib.timeout_add(400, lambda: (self.refresh(page), self.toast_raw(message), False)[2])
 
-    def set_master(self, enabled):
+    def set_master(self, enabled, page="ext"):
         if self.loading:
             return
         text = store.to_variant(*store.MASTER, not enabled).print_(False)
         self.commit("tweak", [store.gsettings_change(*store.MASTER, text)],
-                    "已恢復擴充功能" if enabled else "已暫停所有擴充功能", page="ext")
+                    "已恢復擴充功能" if enabled else "已暫停所有擴充功能", page=page)
+
+    def master_row(self, page):
+        """全部擴充功能的總開關；關閉即安全模式。擴充功能頁與總覽共用同一列。"""
+        usable = store.has_key(*store.MASTER)
+        w = Adw.SwitchRow(title=_m("全部擴充功能"), subtitle=_m("關閉即進入安全模式"), sensitive=usable,
+                          active=usable and not store.settings(store.MASTER[0]).get_boolean(store.MASTER[1]))
+        w.connect("notify::active", lambda r, _p: self.set_master(r.get_active(), page))
+        return w
 
     def uninstall_extension(self, e):
         def run():
@@ -1208,11 +1224,8 @@ class Tuneup(Adw.Application):
         self.ext_nav = nav
         p = Adw.PreferencesPage()
         g = group()
-        master = Adw.SwitchRow(title=_m("全部擴充功能"), subtitle=_m("關閉即進入安全模式"))
-        master_on = store.has_key(*store.MASTER) and not store.settings(store.MASTER[0]).get_boolean(store.MASTER[1])
-        master.set_active(master_on)
-        master.set_sensitive(store.has_key(*store.MASTER))
-        master.connect("notify::active", lambda w, _p: self.set_master(w.get_active()))
+        master = self.master_row("ext")
+        master_on = master.get_active()
         g.add(master)
         p.add(g)
 

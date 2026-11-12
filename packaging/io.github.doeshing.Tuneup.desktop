@@ -7,3 +7,9 @@ Icon=preferences-system
 Terminal=false
 Categories=GNOME;GTK;Settings;
 StartupWMClass=io.github.doeshing.Tuneup
+Actions=safe-mode;
+
+[Desktop Action safe-mode]
+Name=Pause All Extensions
+Name[zh_TW]=暫停所有擴充功能
+Exec=tuneup --safe-mode
