@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.tuneup-panel" path="/org/gnome/shell/extensions/tuneup-panel/">
+    <key name="hidden" type="as">
+      <default>[]</default>
+      <summary>Hidden items</summary>
+    </key>
+    <key name="order" type="as">
+      <default>[]</default>
+      <summary>Item order</summary>
+      <description>Items listed here are arranged in this order within their own box. Others keep their place.</description>
+    </key>
+    <key name="custom-spacing" type="b">
+      <default>false</default>
+      <summary>Custom spacing</summary>
+    </key>
+    <key name="spacing" type="i">
+      <range min="0" max="24"/>
+      <default>12</default>
+      <summary>Padding on each side of every item, in pixels</summary>
+    </key>
+    <key name="item-spacing" type="a{si}">
+      <default>{}</default>
+      <summary>Padding of single items, overriding spacing</summary>
+    </key>
+    <key name="items" type="s">
+      <default>'[]'</default>
+      <summary>Items on the top bar</summary>
+      <description>Written by the extension, as JSON, for Tuneup to list.</description>
+    </key>
+  </schema>
+</schemalist>

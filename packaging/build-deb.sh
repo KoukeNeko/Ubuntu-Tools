@@ -31,6 +31,14 @@ dhruva=extension/dhruva@narkagni
 [ -f "$dhruva/metadata.json" ] || { echo "Dhruva is missing: run git submodule update --init" >&2; exit 1; }
 mkdir -p "$app/$dhruva"
 tar -C "$dhruva" --exclude=.git --exclude=media --exclude=docs --exclude=tests --exclude=manage.sh -cf - . | tar -C "$app/$dhruva" -xf -
+# Tuneup's own top bar extension is installed for every user, so a new
+# package brings a new version of it without Tuneup copying anything.
+panel=extension/tuneup-panel@koukeneko.github.io
+shell_ext="$stage/usr/share/gnome-shell/extensions/${panel#extension/}"
+install -d "$shell_ext/schemas"
+install -m 644 "$panel/metadata.json" "$panel/extension.js" "$shell_ext/"
+install -m 644 "$panel"/schemas/*.gschema.xml "$shell_ext/schemas/"
+glib-compile-schemas --strict "$shell_ext/schemas"
 
 install -d "$stage/usr/share/doc/tuneup"
 install -m 644 packaging/copyright "$stage/usr/share/doc/tuneup/copyright"

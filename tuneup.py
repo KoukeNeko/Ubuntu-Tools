@@ -132,6 +132,9 @@ UBUNTU_DOCK_UUID = "ubuntu-dock@ubuntu.com"
 DHRUVA_SOURCE = Path(__file__).resolve().parent / "extension" / DHRUVA_UUID
 DHRUVA_TARGET = store.EXTENSION_DIRS[0] / DHRUVA_UUID
 DHRUVA_SKIP = (".git", "media", "docs", "tests", "manage.sh")  # 執行時用不到的內容不安裝
+# Tuneup 自己的頂部列擴充功能，隨套件裝到系統的擴充功能資料夾
+PANEL_UUID = "tuneup-panel@koukeneko.github.io"
+PANEL = "org.gnome.shell.extensions.tuneup-panel"
 CARD_WIDTH = 200          # 市集格狀檢視的卡片寬度
 SIDE_COLUMN_WIDTH = 320   # 詳細頁右欄（下載與安裝）的寬度
 NARROW_DETAIL = "max-width: 800sp"  # 詳細頁的內容區比這個窄時，雙欄改成上下排列
@@ -283,6 +286,8 @@ IDLE_ACTIONS = [("暫停", "suspend"), ("休眠", "hibernate"), ("關機", "shut
 DEPENDS = {
     (IF, "font-rgba-order"): ((IF, "font-antialiasing"), lambda v: v == "rgba"),
     (WM, "num-workspaces"): ((MUTTER, "dynamic-workspaces"), lambda v: not v),
+    (PANEL, "spacing"): ((PANEL, "custom-spacing"), lambda v: v),
+    (PANEL, "item-spacing"): ((PANEL, "custom-spacing"), lambda v: v),
 }
 
 TWEAKS = [  # (分類, 圖示, [(群組, [項目])])；群組可以多帶一個說明：(群組, 說明, [項目])
@@ -459,6 +464,7 @@ MODULES = [
 # 接在某個調校分類後面的獨立頁面
 EXTRA_PAGES = {
     "外觀": [("themes", "主題與圖示", "preferences-desktop-theme-symbolic")],
+    "頂部列與 Dock": [("panel", "頂部列項目", "focus-top-bar-symbolic")],
     "鍵盤與滑鼠": [("xkb", "鍵盤配置選項", "preferences-desktop-keyboard-symbolic")],
     "音效": [("audio", "音訊裝置", "audio-card-symbolic")],
 }
@@ -493,6 +499,13 @@ KEY_TITLES = {}
 for _item in all_items():
     KEY_TITLES.setdefault((_item[2], _item[3]), _item[1])
 KEY_TITLES[store.MASTER] = "全部擴充功能"
+
+
+def panel_arranged(ids, order):
+    """頂部列擴充功能的排法（extension.js 的 _reorder）：列在 order 裡的項目依序填回它們原本的位置，其他的不動。
+    擴充功能寫出的清單已經排好，這裡只是讓還沒套用的順序先顯示出來。"""
+    queue = sorted((i for i in ids if i in order), key=order.index)
+    return [queue.pop(0) if i in order else i for i in ids]
 
 
 def wm_class_of(info):
@@ -1781,6 +1794,95 @@ class Tuneup(Adw.Application):
         return nav
 
     # ---------- 鍵盤配置選項 ----------
+    # ---------- 頂部列項目 ----------
+    PANEL_NAMES = {"activities": "活動", "appMenu": "應用程式選單", "dateMenu": "時鐘", "quickSettings": "快速設定",
+                   "a11y": "協助工具", "keyboard": "輸入法", "dwellClick": "停留點擊",
+                   "screenRecording": "螢幕錄影", "screenSharing": "螢幕分享"}
+    PANEL_BOXES = [("left", "左側"), ("center", "中間"), ("right", "右側")]
+    PANEL_ALWAYS_SHOWN = {"quickSettings"}  # 關機、網路、音量都在裡面，和 macOS 的控制中心一樣不能隱藏
+
+    def page_panel(self):
+        p = Adw.PreferencesPage()
+        g = group()
+        p.add(g)
+        title, name = "頂部列管理", "Tuneup Panel"
+        ext = next((e for e in self.exts if e["uuid"] == PANEL_UUID), None)
+        if not ext:
+            # 隨套件安裝；GNOME Shell 在 Wayland 上只在登入時掃描新的擴充功能
+            g.add(row(title, name, None, [chip("登出後生效", "warning")]))
+            return p
+        g.add(self.extension_switch(PANEL_UUID, title, name, "panel"))
+        if ext["state"] != EXT_STATE_ACTIVE or not store.has_key(PANEL, "items"):
+            return p
+        try:
+            items = json.loads(store.settings(PANEL).get_string("items"))
+        except ValueError:
+            items = []  # 擴充功能還沒寫入，或內容被改壞；下次頂部列有變動時會重寫
+
+        g = group("間距")
+        custom, spacing_row = (self.tweak_row(item) for item in (sw("自訂間距", PANEL, "custom-spacing"), sp("間距", PANEL, "spacing", 0, 24, 1)))
+        g.add(custom)
+        g.add(spacing_row)
+        p.add(g)
+
+        order, hidden = self.shown_value(PANEL, "order"), self.shown_value(PANEL, "hidden")
+        boxes = {box: panel_arranged([i["id"] for i in items if i["box"] == box], order) for box, _t in self.PANEL_BOXES}
+        names = {i["id"]: _(self.PANEL_NAMES[i["id"]]) if i["id"] in self.PANEL_NAMES else i["name"] for i in items}
+        self.page_words["panel"] += [n.lower() for n in names.values()]
+        following = []  # 沒有個別間距、跟著統一間距的項目
+
+        def move(box, k, step):
+            ids = list(boxes[box])
+            ids[k], ids[k + step] = ids[k + step], ids[k]
+            self.stage(PANEL, "order", [i for b, _t in self.PANEL_BOXES for i in (ids if b == box else boxes[b])])
+            self.reload("panel")
+
+        def set_shown(item_id, on):
+            current = self.shown_value(PANEL, "hidden")
+            self.stage(PANEL, "hidden", [i for i in current if i != item_id] + ([] if on else [item_id]))
+
+        def set_padding(item_id, spin):
+            overrides = dict(self.shown_value(PANEL, "item-spacing"))
+            padding = int(spin.get_value())
+            if padding == self.shown_value(PANEL, "spacing"):
+                overrides.pop(item_id, None)
+                if spin not in following:
+                    following.append(spin)
+            else:
+                overrides[item_id] = padding
+                if spin in following:
+                    following.remove(spin)
+            self.stage(PANEL, "item-spacing", overrides)
+
+        overrides, spacing = self.shown_value(PANEL, "item-spacing"), self.shown_value(PANEL, "spacing")
+        for box, box_title in self.PANEL_BOXES:
+            if not boxes[box]:
+                continue
+            g = group(box_title)
+            for k, item_id in enumerate(boxes[box]):
+                spin = Gtk.SpinButton.new_with_range(0, 24, 1)
+                spin.set_valign(Gtk.Align.CENTER)
+                spin.set_value(overrides.get(item_id, spacing))
+                spin.connect("value-changed", lambda s, item_id=item_id: set_padding(item_id, s))
+                self.key_widgets.setdefault((PANEL, "item-spacing"), []).append(spin)
+                if item_id not in overrides:
+                    following.append(spin)
+                up = btn(None, "flat", "go-up-symbolic", on_click=lambda box=box, k=k: move(box, k, -1))
+                up.set_tooltip_text(_("上移"))
+                up.set_sensitive(k > 0)
+                down = btn(None, "flat", "go-down-symbolic", on_click=lambda box=box, k=k: move(box, k, 1))
+                down.set_tooltip_text(_("下移"))
+                down.set_sensitive(k < len(boxes[box]) - 1)
+                suffix = [spin, up, down]
+                if item_id not in self.PANEL_ALWAYS_SHOWN:
+                    shown = Gtk.Switch(active=item_id not in hidden, valign=Gtk.Align.CENTER)
+                    shown.connect("notify::active", lambda s, _p, item_id=item_id: set_shown(item_id, s.get_active()))
+                    suffix.append(shown)
+                g.add(row(names[item_id], suffix=suffix, data=True))
+            p.add(g)
+        spacing_row.connect("notify::value", lambda w, _p: [s.set_value(w.get_value()) for s in list(following)])
+        return p
+
     def page_xkb(self):
         p = Adw.PreferencesPage()
         schema, key = "org.gnome.desktop.input-sources", "xkb-options"
@@ -2653,6 +2755,7 @@ class Tuneup(Adw.Application):
         for i, (_name, _icon, groups) in enumerate(TWEAKS):
             self.stack.add_named(self.tweak_page(f"tw{i}", groups), f"tw{i}")
         self.stack.add_named(self.page_themes(), "themes")
+        self.stack.add_named(self.page_panel(), "panel")
         self.stack.add_named(self.page_xkb(), "xkb")
         self.stack.add_named(self.page_audio(), "audio")
         self.stack.add_named(self.page_startup(), "startup")

@@ -1,0 +1,8 @@
+{
+  "uuid": "tuneup-panel@koukeneko.github.io",
+  "name": "Tuneup Panel",
+  "description": "Hide, reorder and space the items of the top bar. Configured from Tuneup.",
+  "shell-version": ["47", "48", "49", "50", "51"],
+  "settings-schema": "org.gnome.shell.extensions.tuneup-panel",
+  "url": "https://github.com/KoukeNeko/Ubuntu-Tools"
+}
