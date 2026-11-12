@@ -603,5 +603,8 @@
   "超過 {n} 天沒有備份": "No backup in over {n} days",
   "已經有一個偏好設定視窗開著，先關閉它": "A preferences window is already open; close it first",
   "無法開啟：{error}": "Could not open: {error}",
-  "Dock 擴充功能": "Dock extensions"
+  "Dock 擴充功能": "Dock extensions",
+  "側邊欄": "Sidebar",
+  "檔案的側邊欄模糊": "Blurred sidebar in Files",
+  "重新開啟「檔案」後生效": "Takes effect after reopening Files"
 }

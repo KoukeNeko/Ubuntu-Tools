@@ -120,6 +120,16 @@ class SystemTest(unittest.TestCase):
     def test_missing_command(self):
         self.assertEqual(system.run(["tuneup-no-such-command"]), (-1, ""))
 
+    def test_sidebar_css(self):
+        own = "window { color: red; }"
+        on = system.with_sidebar_css(own, True)
+        self.assertTrue(on.startswith(own + "\n"))
+        self.assertIn(system.SIDEBAR_CSS, on)
+        self.assertEqual(system.with_sidebar_css(on, True), on)       # 重複開啟不會多一段
+        self.assertEqual(system.with_sidebar_css(on, False), own + "\n")
+        self.assertEqual(system.with_sidebar_css("", True), system.SIDEBAR_CSS)
+        self.assertEqual(system.with_sidebar_css(system.SIDEBAR_CSS, False), "")
+
 
 if __name__ == "__main__":
     unittest.main()

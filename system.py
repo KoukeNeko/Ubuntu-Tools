@@ -414,3 +414,42 @@ def parse_iso_time(text):
 
 def last_file_backup():
     return parse_iso_time(run(["gsettings", "get", "org.gnome.DejaDup", "last-backup"])[1].strip().strip("'"))
+
+
+# ---------- 側邊欄模糊 ----------
+# 「檔案」的側邊欄改成半透明，內容區維持不透明；視窗後方的模糊由 Blur my Shell 提供。
+# 只寫入使用者 gtk.css 裡自己的那一段，其餘內容原樣保留。
+
+GTK4_CSS = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "gtk-4.0" / "gtk.css"
+SIDEBAR_CSS_BEGIN = "/* tuneup: sidebar blur */"
+SIDEBAR_CSS_END = "/* tuneup: end */"
+SIDEBAR_CSS = f"""{SIDEBAR_CSS_BEGIN}
+window.view {{ background: none; }}
+window.view overlay-split-view > .content-pane {{ background-color: var(--view-bg-color); }}
+window.view overlay-split-view > .sidebar-pane {{ background-color: color-mix(in srgb, var(--sidebar-bg-color) 55%, transparent); }}
+{SIDEBAR_CSS_END}
+"""
+
+
+def with_sidebar_css(text, on):
+    """回傳加上或拿掉側邊欄那一段之後的 gtk.css 內容。"""
+    kept = re.sub(re.escape(SIDEBAR_CSS_BEGIN) + r".*?" + re.escape(SIDEBAR_CSS_END) + r"\n?", "", text, flags=re.S)
+    if not on:
+        return kept
+    return kept + ("\n" if kept and not kept.endswith("\n") else "") + SIDEBAR_CSS
+
+
+def sidebar_css_enabled():
+    try:
+        return SIDEBAR_CSS_BEGIN in GTK4_CSS.read_text()
+    except OSError:
+        return False
+
+
+def set_sidebar_css(on):
+    try:
+        text = GTK4_CSS.read_text()
+    except FileNotFoundError:
+        text = ""
+    GTK4_CSS.parent.mkdir(parents=True, exist_ok=True)
+    GTK4_CSS.write_text(with_sidebar_css(text, on))

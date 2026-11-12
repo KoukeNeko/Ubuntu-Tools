@@ -468,6 +468,11 @@ EXTRA_PAGES = {
 }
 POWER_PAGE = "tw%d" % next(i for i, t in enumerate(TWEAKS) if t[0] == "電源")
 DOCK_PAGE = "tw%d" % next(i for i, t in enumerate(TWEAKS) if t[0] == "頂部列與 Dock")
+WINDOW_PAGE = "tw%d" % next(i for i, t in enumerate(TWEAKS) if t[0] == "視窗")
+# 側邊欄模糊：Blur my Shell 模糊「檔案」視窗的後方，system.SIDEBAR_CSS 讓側邊欄透出來
+BLUR_UUID = "blur-my-shell@aunetx"
+BLUR_APPS = "org.gnome.shell.extensions.blur-my-shell.applications"
+FILES_WM_CLASS = "org.gnome.Nautilus"
 SIDEBAR = (  # (id, 標題, 圖示)；None = 分隔線。調校分類直接由 TWEAKS 產生
     [("dash", "總覽", "go-home-symbolic"), ("ext", "擴充功能", "application-x-addon-symbolic"), None]
     + [entry for i, (name, icon, _groups) in enumerate(TWEAKS)
@@ -1409,6 +1414,8 @@ class Tuneup(Adw.Application):
             p.add(self.lid_group())
         if nid == DOCK_PAGE:
             p.add(self.dock_extensions_group())
+        if nid == WINDOW_PAGE:
+            p.add(self.sidebar_blur_group())
         return p
 
     def extension_switch(self, uuid, title, name, page):
@@ -1462,6 +1469,40 @@ class Tuneup(Adw.Application):
             if ext and ext["has_prefs"]:
                 g.add(row("開啟偏好設定", suffix=[btn("開啟", on_click=lambda: self.open_extension_prefs(ext))]))
         g.add(self.extension_switch(MAGIC_LAMP_UUID, "最小化精靈效果", "Compiz alike magic lamp effect", DOCK_PAGE))
+        return g
+
+    def sidebar_blur_group(self):
+        """側邊欄的樣式寫在 gtk.css，不是 gsettings，所以和闔上螢幕一樣不走「未套用」流程。"""
+        g = group("側邊欄")
+        title, name = "檔案的側邊欄模糊", "Blur my Shell"
+        ext = next((e for e in self.exts if e["uuid"] == BLUR_UUID), None)
+        if not ext or not store.has_key(BLUR_APPS, "whitelist"):
+            g.add(self.extension_switch(BLUR_UUID, title, name, WINDOW_PAGE))
+            return g
+        blur = store.settings(BLUR_APPS)
+        active = (ext["state"] == EXT_STATE_ACTIVE and blur.get_boolean("blur")
+                  and FILES_WM_CLASS in blur.get_strv("whitelist") and system.sidebar_css_enabled())
+        w = Adw.SwitchRow(title=_m(title), subtitle=esc(name), active=active)
+
+        def toggled(row_, _p):
+            on = row_.get_active()
+            apps = [a for a in blur.get_strv("whitelist") if a != FILES_WM_CLASS] + ([FILES_WM_CLASS] if on else [])
+            wanted = {"whitelist": apps}
+            if on:
+                # 不透明度交給 gtk.css，Blur my Shell 不再把整個視窗調淡
+                wanted.update({"blur": True, "opacity": 255, "dynamic-opacity": False})
+            changes = [store.gsettings_change(BLUR_APPS, key, store.to_variant(BLUR_APPS, key, value).print_(False))
+                       for key, value in wanted.items()]
+            if on and ext["state"] != EXT_STATE_ACTIVE:
+                changes.append(store.extension_change(BLUR_UUID, ext["name"], False, True))
+            try:
+                system.set_sidebar_css(on)
+                store.apply("tweak", changes)
+                self.toast("重新開啟「檔案」後生效")
+            except (OSError, GLib.Error) as err:
+                self.toast_raw(_("無法套用：{error}").format(error=str(err)))
+        w.connect("notify::active", toggled)
+        g.add(w)
         return g
 
     def lid_group(self):
