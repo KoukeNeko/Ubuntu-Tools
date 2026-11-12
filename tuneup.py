@@ -468,6 +468,11 @@ WINDOW_PAGE = "tw%d" % next(i for i, t in enumerate(TWEAKS) if t[0] == "視窗")
 # 側邊欄模糊：Blur my Shell 模糊每個視窗的後方，system.SIDEBAR_CSS 讓 GTK 程式的側邊欄透出來
 BLUR_UUID = "blur-my-shell@aunetx"
 BLUR_APPS = "org.gnome.shell.extensions.blur-my-shell.applications"
+BLUR_ROOT = "org.gnome.shell.extensions.blur-my-shell"
+# Blur my Shell 預設的模糊半徑是 30，側邊欄後方仍看得出形狀；另外加一組很霧的給應用程式用，不動預設那組
+SIDEBAR_PIPELINE = "pipeline_tuneup_sidebar"
+SIDEBAR_PIPELINE_VALUE = ("{'name': <'Tuneup Sidebar'>, 'effects': <[<{'type': <'dual_kawase_blur'>, 'id': <'effect_tuneup_sidebar'>, "
+                          "'params': <{'unscaled_radius': <200>, 'brightness': <1.0>}>}>]>}")
 SIDEBAR = (  # (id, 標題, 圖示)；None = 分隔線。調校分類直接由 TWEAKS 產生
     [("dash", "總覽", "go-home-symbolic"), ("ext", "擴充功能", "application-x-addon-symbolic"), None]
     + [entry for i, (name, icon, _groups) in enumerate(TWEAKS)
@@ -1480,9 +1485,9 @@ class Tuneup(Adw.Application):
             return g
         blur = store.settings(BLUR_APPS)
 
-        def write(wanted, done):
+        def write(wanted, done, extra=()):
             changes = [store.gsettings_change(BLUR_APPS, key, store.to_variant(BLUR_APPS, key, value).print_(False))
-                       for key, value in wanted.items()]
+                       for key, value in wanted.items()] + list(extra)
             if wanted.get("blur") and ext["state"] != EXT_STATE_ACTIVE:
                 changes.append(store.extension_change(BLUR_UUID, ext["name"], False, True))
             try:
@@ -1501,9 +1506,18 @@ class Tuneup(Adw.Application):
                 system.set_sidebar_css(on)
             except OSError as err:
                 return self.toast_raw(_("無法套用：{error}").format(error=str(err)))
+            if not on:
+                return write({"enable-all": False}, "重新開啟應用程式後生效", [store.gsettings_change(BLUR_APPS, "pipeline", None)])
+            pipelines = GLib.VariantBuilder.new(GLib.VariantType("a{sa{sv}}"))
+            current = store.settings(BLUR_ROOT).get_value("pipelines")
+            for name_ in current.keys():
+                if name_ != SIDEBAR_PIPELINE:
+                    pipelines.add_value(GLib.Variant.new_dict_entry(GLib.Variant("s", name_), current.lookup_value(name_, None)))
+            pipelines.add_value(GLib.Variant.new_dict_entry(
+                GLib.Variant("s", SIDEBAR_PIPELINE), GLib.Variant.parse(GLib.VariantType("a{sv}"), SIDEBAR_PIPELINE_VALUE, None, None)))
             # 不透明度交給樣式，Blur my Shell 不再把整個視窗調淡
-            write({"blur": True, "enable-all": True, "opacity": 255, "dynamic-opacity": False} if on else {"enable-all": False},
-                  "重新開啟應用程式後生效")
+            write({"blur": True, "enable-all": True, "opacity": 255, "dynamic-opacity": False, "pipeline": SIDEBAR_PIPELINE},
+                  "重新開啟應用程式後生效", [store.gsettings_change(BLUR_ROOT, "pipelines", pipelines.end().print_(False))])
         w.connect("notify::active", toggled)
         g.add(w)
 
