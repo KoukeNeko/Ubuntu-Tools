@@ -130,6 +130,13 @@ class SystemTest(unittest.TestCase):
         self.assertEqual(system.with_sidebar_css("", True), system.SIDEBAR_CSS)
         self.assertEqual(system.with_sidebar_css(system.SIDEBAR_CSS, False), "")
 
+    def test_sidebar_css_leaves_desktop_icons_alone(self):
+        # DING 的視窗是 window.background.desktopwindow；任何以 window.background 開頭的規則都不能套到它
+        for rule in system.sidebar_rules():
+            for selector in rule.split("{")[0].split(","):
+                if selector.strip().startswith("window.background"):
+                    self.assertTrue(selector.strip().startswith(system.SIDEBAR_WINDOW), selector)
+
 
 if __name__ == "__main__":
     unittest.main()

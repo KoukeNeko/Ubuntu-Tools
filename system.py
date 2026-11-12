@@ -429,7 +429,9 @@ def last_file_backup():
 GTK4_CSS = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "gtk-4.0" / "gtk.css"
 SIDEBAR_CSS_BEGIN = "/* tuneup: sidebar blur */"
 SIDEBAR_CSS_END = "/* tuneup: end */"
-SIDEBAR_HOST = "window.background > dialog-host > widget > widget"   # libadwaita 放視窗內容的位置
+# 桌面圖示（DING）是一個蓋滿螢幕、刻意幾乎透明的視窗；替它補上底色會把桌布整個蓋住
+SIDEBAR_WINDOW = "window.background:not(.desktopwindow)"
+SIDEBAR_HOST = f"{SIDEBAR_WINDOW} > dialog-host > widget > widget"   # libadwaita 放視窗內容的位置
 SIDEBAR_WRAPPERS = ("toastoverlay", "widget", "taboverview > widget")  # 只是包住內容的外框
 SIDEBAR_DEPTH = 3   # 「檔案」的分割檢視在三層外框之內
 SIDEBAR_OPACITY = 82   # 很霧：只隱約透出後方的顏色
@@ -437,8 +439,8 @@ SIDEBAR_OPACITY = 82   # 很霧：只隱約透出後方的顏色
 
 def sidebar_rules():
     bg = "background-color: var(--window-bg-color);"
-    rules = ["window.background { background: none; }",
-             f"window.background > *:not(dialog-host):not(.titlebar) {{ {bg} }}"]
+    rules = [f"{SIDEBAR_WINDOW} {{ background: none; }}",
+             f"{SIDEBAR_WINDOW} > *:not(dialog-host):not(.titlebar) {{ {bg} }}"]
     for depth in range(SIDEBAR_DEPTH + 1):
         for path in itertools.product(SIDEBAR_WRAPPERS, repeat=depth):
             at = " > ".join([SIDEBAR_HOST, *path])
