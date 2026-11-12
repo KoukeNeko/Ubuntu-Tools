@@ -475,6 +475,7 @@ WINDOW_PAGE = "tw%d" % next(i for i, t in enumerate(TWEAKS) if t[0] == "視窗")
 BLUR_UUID = "blur-my-shell@aunetx"
 BLUR_APPS = "org.gnome.shell.extensions.blur-my-shell.applications"
 BLUR_ROOT = "org.gnome.shell.extensions.blur-my-shell"
+BLUR_DOCK = "org.gnome.shell.extensions.blur-my-shell.dash-to-dock"
 # Blur my Shell 預設的模糊半徑是 30，側邊欄後方仍看得出形狀；另外加一組很霧的給應用程式用，不動預設那組
 SIDEBAR_PIPELINE = "pipeline_tuneup_sidebar"
 SIDEBAR_PIPELINE_VALUE = ("{'name': <'Tuneup Sidebar'>, 'effects': <[<{'type': <'dual_kawase_blur'>, 'id': <'effect_tuneup_sidebar'>, "
@@ -896,6 +897,9 @@ class Tuneup(Adw.Application):
         if want and e["uuid"] == DHRUVA_UUID:
             changes += [store.extension_change(d["uuid"], d["name"], True, False)
                         for d in self.exts if d["uuid"] == UBUNTU_DOCK_UUID and d["state"] == EXT_STATE_ACTIVE]
+            # Dhruva 自己畫 Dock 的毛玻璃；Blur my Shell 再疊一層會讓它在概覽裡淡不掉
+            if store.has_key(BLUR_DOCK, "blur"):
+                changes.append(store.gsettings_change(BLUR_DOCK, "blur", "false"))
         try:
             store.apply("extension", changes)
         except GLib.Error as err:
