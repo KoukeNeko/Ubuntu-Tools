@@ -1,0 +1,13 @@
+/* Window previews shown from the dock. The theme sizes this close button for
+   the overview's large thumbnails; on these small ones it covers a corner of
+   the window. */
+.dashtodock-app-well-preview-menu-item .window-close {
+    width: 16px;
+    height: 16px;
+    padding: 3px;
+    margin: 2px;
+}
+
+.dashtodock-app-well-preview-menu-item .window-close StIcon {
+    icon-size: 12px;
+}
