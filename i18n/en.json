@@ -605,8 +605,7 @@
   "無法開啟：{error}": "Could not open: {error}",
   "Dock 擴充功能": "Dock extensions",
   "側邊欄": "Sidebar",
-  "檔案的側邊欄模糊": "Blurred sidebar in Files",
-  "重新開啟「檔案」後生效": "Takes effect after reopening Files",
-  "側邊欄模糊": "Blurred sidebar",
-  "Tuneup 的側邊欄模糊": "Blurred sidebar in Tuneup"
+  "側邊欄模糊": "Blurred sidebars",
+  "重新開啟應用程式後生效": "Takes effect after reopening the app",
+  "不模糊的應用程式": "Apps without blur"
 }

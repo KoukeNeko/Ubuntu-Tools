@@ -3,6 +3,7 @@
 讀取都不需要權限；會改動系統的指令一律由介面在使用者確認後呼叫 run_root()，
 由 pkexec 跳出系統的密碼視窗。
 """
+import itertools
 import json
 import os
 import re
@@ -417,18 +418,44 @@ def last_file_backup():
 
 
 # ---------- 側邊欄模糊 ----------
-# 「檔案」的側邊欄改成半透明，內容區維持不透明；視窗後方的模糊由 Blur my Shell 提供。
+# GTK 應用程式的側邊欄改成半透明，其餘維持不透明；視窗後方的模糊由 Blur my Shell 提供。
 # 只寫入使用者 gtk.css 裡自己的那一段，其餘內容原樣保留。
+#
+# 使用者的 gtk.css 對所有程式一體適用，也沒有 :has()，沒辦法只挑「有側邊欄的視窗」。
+# 所以反過來：每個視窗的底色都拿掉，改由視窗裡的第一層內容畫回去；只有當那一層是純粹的
+# 外框（toastoverlay 之類）時再往下一層，一路到側邊欄分割檢視為止，讓它的側邊欄透出去。
+# 遇到不認得的結構就停在那一層畫底色，那個程式看起來和原本一樣。
 
 GTK4_CSS = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "gtk-4.0" / "gtk.css"
 SIDEBAR_CSS_BEGIN = "/* tuneup: sidebar blur */"
 SIDEBAR_CSS_END = "/* tuneup: end */"
-SIDEBAR_CSS = f"""{SIDEBAR_CSS_BEGIN}
-window.view {{ background: none; }}
-window.view overlay-split-view > .content-pane {{ background-color: var(--view-bg-color); }}
-window.view overlay-split-view > .sidebar-pane {{ background-color: color-mix(in srgb, var(--sidebar-bg-color) 55%, transparent); }}
-{SIDEBAR_CSS_END}
-"""
+SIDEBAR_HOST = "window.background > dialog-host > widget > widget"   # libadwaita 放視窗內容的位置
+SIDEBAR_WRAPPERS = ("toastoverlay", "widget", "taboverview > widget")  # 只是包住內容的外框
+SIDEBAR_DEPTH = 3   # 「檔案」的分割檢視在三層外框之內
+SIDEBAR_OPACITY = 82   # 很霧：只隱約透出後方的顏色
+
+
+def sidebar_rules():
+    bg = "background-color: var(--window-bg-color);"
+    rules = ["window.background { background: none; }",
+             f"window.background > *:not(dialog-host):not(.titlebar) {{ {bg} }}"]
+    for depth in range(SIDEBAR_DEPTH + 1):
+        for path in itertools.product(SIDEBAR_WRAPPERS, repeat=depth):
+            at = " > ".join([SIDEBAR_HOST, *path])
+            rules.append(f"{at} > *:not(toast) {{ {bg} }}")
+            clear = ["navigation-split-view", "overlay-split-view"]
+            if depth < SIDEBAR_DEPTH:
+                clear += ["toastoverlay", "widget", "taboverview"]
+            rules.append(", ".join(f"{at} > {name}" for name in clear) + " { background: none; }")
+    # 視窗變窄、側邊欄收起來時，分割檢視不再標示 .content-pane，內容要另外補底色
+    content = ".content-pane, navigation-split-view > navigation-view > navigation-view-page, overlay-split-view > outline + widget"
+    rules += [f"{content} {{ {bg} }}",
+              "window.view .content-pane, window.view overlay-split-view > outline + widget { background-color: var(--view-bg-color); }",
+              f".sidebar-pane {{ background-color: color-mix(in srgb, var(--sidebar-bg-color) {SIDEBAR_OPACITY}%, transparent); }}"]
+    return rules
+
+
+SIDEBAR_CSS = "\n".join([SIDEBAR_CSS_BEGIN, *sidebar_rules(), SIDEBAR_CSS_END]) + "\n"
 
 
 def with_sidebar_css(text, on):
