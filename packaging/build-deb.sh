@@ -1,12 +1,20 @@
 #!/bin/sh
 # Build dist/tuneup_<version>_all.deb from the working tree.
-# The version comes from VERSION in tuneup.py so there is one source of truth.
+# The base version comes from VERSION in tuneup.py so there is one source of truth.
 set -eu
 
 cd "$(dirname "$0")/.."
 
 version=$(sed -n 's/^VERSION = "\(.*\)"$/\1/p' tuneup.py)
 [ -n "$version" ] || { echo "VERSION not found in tuneup.py" >&2; exit 1; }
+
+# Every build must sort above the previous one, or apt keeps the installed
+# copy. Append the commit count, plus a timestamp when the tree has
+# uncommitted changes: 0.1.0+37 < 0.1.0+37.202611121400 < 0.1.0+38.
+if git rev-parse --git-dir >/dev/null 2>&1; then
+    version="$version+$(git rev-list --count HEAD)"
+    [ -z "$(git status --porcelain --untracked-files=no)" ] || version="$version.$(date +%Y%m%d%H%M)"
+fi
 
 # MAINTAINER can be set by CI; locally it falls back to the git identity.
 maintainer=${MAINTAINER:-"$(git config user.name) <$(git config user.email)>"}
