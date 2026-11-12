@@ -131,7 +131,9 @@ DHRUVA_UUID = "dhruva@narkagni"
 UBUNTU_DOCK_UUID = "ubuntu-dock@ubuntu.com"
 DHRUVA_SOURCE = Path(__file__).resolve().parent / "extension" / DHRUVA_UUID
 DHRUVA_TARGET = store.EXTENSION_DIRS[0] / DHRUVA_UUID
-DHRUVA_SKIP = (".git", "media", "docs", "tests", "manage.sh")  # 執行時用不到的內容不安裝
+# 執行時用不到的內容不安裝。gschemas.compiled 也不複製：GNOME Shell 正讀著它，原地覆寫會讓 Shell 當掉，
+# 交給 glib-compile-schemas 重新產生（先寫暫存檔再改名）。
+DHRUVA_SKIP = (".git", "media", "docs", "tests", "manage.sh", "gschemas.compiled")
 # Tuneup 自己的頂部列擴充功能，隨套件裝到系統的擴充功能資料夾
 PANEL_UUID = "tuneup-panel@koukeneko.github.io"
 PANEL = "org.gnome.shell.extensions.tuneup-panel"
