@@ -1400,25 +1400,49 @@ class Tuneup(Adw.Application):
             self.toast_raw(_("已安裝 {names}，尚未套用").format(names=", ".join(names)))
 
     def offer_apply(self, kind, names, button):
-        """安裝完成後，把「安裝」按鈕換成「套用」。一個壓縮檔可能含多個變體，這時按下會列出來讓使用者選。"""
+        """安裝完成後，把「安裝」換成「套用」加一顆移除鍵，不喜歡可以馬上拿掉。
+
+        一個壓縮檔可能含多個變體：套用時列出來讓使用者選，移除則是整包一起移除。
+        """
         schema, key = market.KINDS[kind]["setting"]
+        usable = store.has_key(schema, key)  # 還沒裝 User Themes 時，Shell 主題裝得了但套用不了
         parent = button.get_parent()
-        if not store.has_key(schema, key):  # 例如還沒裝 User Themes 的 Shell 主題
-            button.set_label(_("已安裝"))
-            button.set_sensitive(False)
-            return
         if len(names) == 1:
-            new = btn("套用", "suggested-action", on_click=lambda: self.apply_theme(kind, names[0]))
+            apply = btn("套用" if usable else "已安裝", "suggested-action" if usable else None, on_click=lambda: self.apply_theme(kind, names[0]))
         else:
             menu = Gio.Menu()
             for name in sorted(names):
                 item = Gio.MenuItem.new(name, None)
                 item.set_action_and_target_value("app.theme-apply", GLib.Variant("s", f"{kind}:{name}"))
                 menu.append_item(item)
-            new = Gtk.MenuButton(label=_("套用"), menu_model=menu, valign=Gtk.Align.CENTER)
-            new.add_css_class("suggested-action")
-        parent.remove(button)
-        parent.append(new)
+            apply = Gtk.MenuButton(label=_("套用") if usable else _("已安裝"), menu_model=menu, valign=Gtk.Align.CENTER)
+            if usable:
+                apply.add_css_class("suggested-action")
+        apply.set_sensitive(usable)
+        trash = btn(None, "flat", "user-trash-symbolic")
+        trash.set_tooltip_text(_("移除"))
+
+        def removed():
+            try:
+                if usable and store.settings(schema).get_string(key) in names:
+                    # 正在使用的主題被移除後畫面會壞掉，先把設定還原為預設值
+                    store.apply("tweak", [store.gsettings_change(schema, key, None)])
+                for name in names:
+                    path = market.KINDS[kind]["install"] / name
+                    if path.exists():
+                        market.remove_theme(path)
+            except (ValueError, GLib.Error) as err:
+                return self.toast_raw(_("無法套用：{error}").format(error=str(err)))
+            parent.remove(apply)
+            parent.remove(trash)
+            button.set_visible(True)
+            self.refresh("themes")
+            self.toast_raw(_("已移除 {names}，檔案在垃圾桶").format(names=", ".join(names)))
+        trash.connect("clicked", lambda *_a: self.confirm(
+            "移除剛安裝的主題？", ", ".join(names) + "\n" + _("會移到垃圾桶；如果正在使用，會先還原為預設主題。"), "移除", removed, destructive=True))
+        button.set_visible(False)  # 留著原本的安裝鍵，移除後再顯示出來
+        parent.append(apply)
+        parent.append(trash)
 
     def install_theme_file(self, kind):
         def opened(dialog, result):

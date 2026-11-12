@@ -549,7 +549,6 @@
   "{n} 個": "{n} themes",
   "主題與圖示": "Themes & Icons",
   "使用中": "In use",
-  "安裝、套用、移除圖示、游標與介面主題；套用會記入歷史": "Install, apply and remove icon, cursor and interface themes; applying is recorded in History",
   "安裝自己下載的擴充功能 .zip 檔": "Install an extension .zip you downloaded yourself",
   "市集": "Store",
   "從 gnome-look.org 瀏覽與安裝": "Browse and install from gnome-look.org",
@@ -592,5 +591,9 @@
   "需要啟用 User Themes 擴充功能": "The User Themes extension needs to be enabled",
   "已經安裝，啟用後就能套用 Shell 主題": "It is installed; enable it to apply Shell themes",
   "安裝並啟用": "Install and Enable",
-  "從 extensions.gnome.org 安裝；GNOME Shell 會跳出確認視窗": "Installs from extensions.gnome.org; GNOME Shell will ask you to confirm"
+  "從 extensions.gnome.org 安裝；GNOME Shell 會跳出確認視窗": "Installs from extensions.gnome.org; GNOME Shell will ask you to confirm",
+  "已移除 {names}，檔案在垃圾桶": "Removed {names}; the files are in the trash",
+  "移除剛安裝的主題？": "Remove the theme you just installed?",
+  "會移到垃圾桶；如果正在使用，會先還原為預設主題。": "It will be moved to the trash; if it is in use, the default theme is restored first.",
+  "安裝、套用、移除圖示、游標與介面主題；套用會記入歷史": "Install, apply and remove icon, cursor and interface themes; applying is recorded in History"
 }
