@@ -1472,9 +1472,50 @@ class Tuneup(Adw.Application):
             b = btn("套用", on_click=lambda: self.apply_theme(kind, theme["name"]))
             b.set_sensitive(usable)
             r.add_suffix(b)
-        if theme["user"] and theme["name"] != current:
+        if theme["user"] and theme["path"] not in self.themes_in_use:
             r.add_suffix(btn(None, "flat", "user-trash-symbolic", on_click=lambda: self.remove_theme(theme)))
+            # 多選用的勾選框，平常隱藏；同一個資料夾可能同時是圖示與游標主題，所以以路徑為準
+            check = Gtk.CheckButton(valign=Gtk.Align.CENTER, visible=False)
+            check.connect("toggled", lambda *_a: self.update_theme_selection())
+            r.add_prefix(check)
+            self.theme_checks.append((check, theme))
         return r
+
+    def selected_themes(self):
+        """勾選的主題，依路徑去除重複。"""
+        return list({t["path"]: t for check, t in self.theme_checks if check.get_active()}.values())
+
+    def update_theme_selection(self):
+        n = len(self.selected_themes())
+        self.theme_remove_button.set_label(_("移除 {n} 個").format(n=n))
+        self.theme_remove_button.set_sensitive(n > 0)
+
+    def set_theme_selecting(self, on):
+        for check, _theme in self.theme_checks:
+            check.set_visible(on)
+            if not on:
+                check.set_active(False)
+        self.theme_select_button.set_label(_("取消") if on else _("選取"))
+        self.theme_remove_button.set_visible(on)
+        self.update_theme_selection()
+
+    def remove_selected_themes(self):
+        themes = self.selected_themes()
+
+        def run():
+            failed = []
+            for theme in themes:
+                try:
+                    market.remove_theme(theme["path"])
+                except (ValueError, GLib.Error):
+                    failed.append(theme["name"])
+            self.reload("themes")
+            if failed:
+                self.toast_raw(_("無法移除：{names}").format(names=", ".join(failed)))
+            else:
+                self.toast_raw(_("已移除 {n} 個主題，檔案在垃圾桶").format(n=len(themes)))
+        names = ", ".join(sorted(t["name"] for t in themes)[:12]) + (" …" if len(themes) > 12 else "")
+        self.confirm(_("移除 {n} 個主題？").format(n=len(themes)), names + "\n" + _("會移到垃圾桶。"), "移除", run, destructive=True)
 
     def show_theme_store(self, kind):
         def search(text, order, number):
@@ -1515,8 +1556,20 @@ class Tuneup(Adw.Application):
         self.theme_nav = nav
         p = Adw.PreferencesPage()
         g = group()
-        g.add(row("主題與圖示", "安裝、套用、移除圖示、游標與介面主題；套用會記入歷史", Gtk.Image(icon_name="preferences-desktop-theme-symbolic")))
+        self.theme_checks = []
+        self.theme_select_button = btn("選取", on_click=lambda: self.set_theme_selecting(not self.theme_remove_button.get_visible()))
+        self.theme_remove_button = btn("移除", "destructive-action", on_click=self.remove_selected_themes)
+        self.theme_remove_button.set_visible(False)
+        g.add(row("主題與圖示", "安裝、套用、移除主題；按「選取」可以一次移除多個", Gtk.Image(icon_name="preferences-desktop-theme-symbolic"),
+                  [self.theme_remove_button, self.theme_select_button]))
         p.add(g)
+        # 正在使用的主題資料夾不能移除（同一個資料夾可能同時提供圖示與游標）
+        self.themes_in_use = set()
+        for kind in self.THEME_TITLES:
+            schema, key = market.KINDS[kind]["setting"]
+            if store.has_key(schema, key):
+                name = store.settings(schema).get_string(key)
+                self.themes_in_use.update(t["path"] for t in market.installed_themes(kind) if t["name"] == name)
         for kind, title in self.THEME_TITLES.items():
             schema, key = market.KINDS[kind]["setting"]
             usable = store.has_key(schema, key)
@@ -1541,6 +1594,7 @@ class Tuneup(Adw.Application):
                 g.add(ex)
             self.page_words["themes"] += [t["name"].lower() for t in themes]
             p.add(g)
+        self.theme_select_button.set_sensitive(bool(self.theme_checks))
         nav.add(Adw.NavigationPage(title=_("主題與圖示"), child=p))
         self.watch_nav("themes", nav)
         return nav

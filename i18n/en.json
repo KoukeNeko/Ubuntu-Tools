@@ -595,5 +595,11 @@
   "已移除 {names}，檔案在垃圾桶": "Removed {names}; the files are in the trash",
   "移除剛安裝的主題？": "Remove the theme you just installed?",
   "會移到垃圾桶；如果正在使用，會先還原為預設主題。": "It will be moved to the trash; if it is in use, the default theme is restored first.",
-  "安裝、套用、移除圖示、游標與介面主題；套用會記入歷史": "Install, apply and remove icon, cursor and interface themes; applying is recorded in History"
+  "安裝、套用、移除主題；按「選取」可以一次移除多個": "Install, apply and remove themes; use Select to remove several at once",
+  "選取": "Select",
+  "移除 {n} 個": "Remove {n}",
+  "無法移除：{names}": "Could not remove: {names}",
+  "已移除 {n} 個主題，檔案在垃圾桶": "Removed {n} themes; the files are in the trash",
+  "移除 {n} 個主題？": "Remove {n} themes?",
+  "會移到垃圾桶。": "They will be moved to the trash."
 }
