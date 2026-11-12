@@ -377,6 +377,37 @@ def set_lid_ignored(on):
         LID_AUTOSTART.unlink(missing_ok=True)
 
 
+# ---------- 螢幕分享 ----------
+# 登出時桌面圖示（DING）會重新啟動自己並喚醒 xdg-desktop-portal。這時圖形工作階段已經結束，GNOME 的
+# portal 後端起不來；這個回報「沒有可分享來源」的 portal 又擋下登出後的 D-Bus 重啟，一路留到下次登入。
+# 要求它只在圖形工作階段中啟動，登出時的喚醒就會直接失敗。
+PORTAL_DROPIN = (Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "systemd" / "user"
+                 / "xdg-desktop-portal.service.d" / "tuneup-require-session.conf")
+PORTAL_DROPIN_TEXT = "[Unit]\nRequisite=graphical-session.target\n"
+PORTAL_UNIT = "xdg-desktop-portal.service"
+
+
+def portal_fix_enabled():
+    return PORTAL_DROPIN.exists()
+
+
+def set_portal_fix(on):
+    """下次登入生效。"""
+    if on:
+        PORTAL_DROPIN.parent.mkdir(parents=True, exist_ok=True)
+        PORTAL_DROPIN.write_text(PORTAL_DROPIN_TEXT)
+    else:
+        PORTAL_DROPIN.unlink(missing_ok=True)
+    if run(["systemctl", "--user", "daemon-reload"])[0] != 0:
+        raise OSError("systemctl --user daemon-reload")
+
+
+def restart_portal():
+    """讓正在執行、已經失效的 portal 重新向 GNOME 的後端取得狀態。"""
+    if run(["systemctl", "--user", "restart", PORTAL_UNIT])[0] != 0:
+        raise OSError(f"systemctl --user restart {PORTAL_UNIT}")
+
+
 # ---------- 還原點與備份狀態 ----------
 # Timeshift 把還原點放在備份裝置的 /timeshift/snapshots；備份裝置就是系統碟時不需要權限就能讀。
 TIMESHIFT_SNAPSHOTS = Path("/timeshift/snapshots")

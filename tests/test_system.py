@@ -1,7 +1,10 @@
 """system.py 解析函式的測試；不執行任何會改動系統的指令。"""
 import os
 import sys
+import tempfile
 import unittest
+from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -129,6 +132,17 @@ class SystemTest(unittest.TestCase):
         self.assertEqual(system.with_sidebar_css(on, False), own + "\n")
         self.assertEqual(system.with_sidebar_css("", True), system.SIDEBAR_CSS)
         self.assertEqual(system.with_sidebar_css(system.SIDEBAR_CSS, False), "")
+
+    def test_portal_fix(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(system, "PORTAL_DROPIN", Path(tmp) / "xdg-desktop-portal.service.d" / "tuneup.conf"), \
+                mock.patch.object(system, "run", return_value=(0, "")) as run:
+            system.set_portal_fix(True)
+            self.assertTrue(system.portal_fix_enabled())
+            self.assertIn("Requisite=graphical-session.target", system.PORTAL_DROPIN.read_text())
+            system.set_portal_fix(False)
+            self.assertFalse(system.portal_fix_enabled())
+            run.assert_called_with(["systemctl", "--user", "daemon-reload"])
 
     def test_sidebar_css_leaves_desktop_icons_alone(self):
         # DING 的視窗是 window.background.desktopwindow；任何以 window.background 開頭的規則都不能套到它

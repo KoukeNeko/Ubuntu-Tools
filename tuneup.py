@@ -486,7 +486,8 @@ SIDEBAR = (  # (id, 標題, 圖示)；None = 分隔線。調校分類直接由 T
     + [("startup", "啟動應用程式", "system-run-symbolic"), None,
        ("apps", "應用程式", "view-app-grid-symbolic"), ("updates", "系統更新", "software-update-available-symbolic"),
        ("cleanup", "系統清理", "user-trash-symbolic"), ("hardware", "驅動與硬體", "computer-symbolic"),
-       ("backup", "備份與還原", "drive-harddisk-symbolic"), ("logs", "錯誤記錄", "dialog-warning-symbolic"), None,
+       ("backup", "備份與還原", "drive-harddisk-symbolic"), ("logs", "錯誤記錄", "dialog-warning-symbolic"),
+       ("tools", "常用工具", "applications-utilities-symbolic"), None,
        ("pf", "設定檔", "emblem-favorite-symbolic"), ("hist", "歷史", "document-open-recent-symbolic"), None,
        ("mods", "模組中心", "application-x-addon-symbolic")]
 )
@@ -2363,6 +2364,33 @@ class Tuneup(Adw.Application):
         return p
 
     # ---------- 錯誤記錄 ----------
+    # ---------- 常用工具 ----------
+    def page_tools(self):
+        """系統設定檔與服務，不是 gsettings，所以和闔上螢幕一樣不走「未套用」流程。"""
+        p = Adw.PreferencesPage()
+        g = group("螢幕分享")
+        w = Adw.SwitchRow(title=_m("登出時不喚醒螢幕分享服務"),
+                          subtitle=_m("避免登入後分享螢幕時沒有選擇視窗，重新登入後生效"), active=system.portal_fix_enabled())
+
+        def toggled(row_, _p):
+            try:
+                system.set_portal_fix(row_.get_active())
+                self.toast("已變更")
+            except OSError as err:
+                self.toast_raw(_("無法套用：{error}").format(error=str(err)))
+        w.connect("notify::active", toggled)
+        g.add(w)
+
+        def restart():
+            try:
+                system.restart_portal()
+                self.toast("已重新啟動")
+            except OSError as err:
+                self.toast_raw(_("無法套用：{error}").format(error=str(err)))
+        g.add(row("重新啟動螢幕分享服務", "分享螢幕時沒有出現選擇視窗", None, [btn("重新啟動", on_click=restart)]))
+        p.add(g)
+        return p
+
     def page_logs(self):
         p = Adw.PreferencesPage()
         g = group()
@@ -2762,6 +2790,7 @@ class Tuneup(Adw.Application):
         self.stack.add_named(self.page_apps(), "apps")
         self.stack.add_named(self.page_updates(), "updates")
         self.stack.add_named(self.page_logs(), "logs")
+        self.stack.add_named(self.page_tools(), "tools")
         self.stack.add_named(self.page_cleanup(), "cleanup")
         self.stack.add_named(self.page_hardware(), "hardware")
         self.stack.add_named(self.page_backup(), "backup")

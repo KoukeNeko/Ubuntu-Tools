@@ -624,5 +624,11 @@
   "輸入法": "Input method",
   "停留點擊": "Dwell click",
   "螢幕錄影": "Screen recording",
-  "螢幕分享": "Screen sharing"
+  "螢幕分享": "Screen sharing",
+  "常用工具": "Utilities",
+  "登出時不喚醒螢幕分享服務": "Don't wake screen sharing on logout",
+  "避免登入後分享螢幕時沒有選擇視窗，重新登入後生效": "Keeps the window picker working; applies at next login",
+  "已重新啟動": "Restarted",
+  "重新啟動螢幕分享服務": "Restart screen sharing",
+  "分享螢幕時沒有出現選擇視窗": "When the window picker doesn't appear while sharing your screen"
 }
