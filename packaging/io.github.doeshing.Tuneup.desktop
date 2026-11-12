@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Tuneup
+Comment=Tweaks, extensions and system tools for Ubuntu
+Exec=tuneup
+Icon=preferences-system
+Terminal=false
+Categories=GNOME;GTK;Settings;
+StartupWMClass=io.github.doeshing.Tuneup

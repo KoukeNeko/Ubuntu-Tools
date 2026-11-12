@@ -1,0 +1,16 @@
+Package: tuneup
+Version: @VERSION@
+Architecture: all
+Maintainer: @MAINTAINER@
+Installed-Size: @SIZE@
+Section: gnome
+Priority: optional
+Depends: python3 (>= 3.12), python3-gi, gir1.2-gtk-4.0, gir1.2-adw-1 (>= 1.5), gnome-shell
+Recommends: pkexec | policykit-1, pipewire-bin, wireplumber, alsa-utils, fwupd
+Suggests: timeshift, deja-dup
+Description: Tweaks, extensions and system tools for Ubuntu
+ Tuneup brings the GNOME Tweaks settings, extension and theme stores,
+ audio device setup, software management, cleanup and backup helpers
+ into one application styled like GNOME Settings.
+ .
+ Every change it makes to settings is recorded and can be undone.
