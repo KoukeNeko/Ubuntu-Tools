@@ -18,6 +18,7 @@ app="$stage/usr/share/tuneup"
 install -d "$app/i18n" "$stage/usr/bin" "$stage/usr/share/applications" "$stage/DEBIAN"
 install -m 644 tuneup.py store.py system.py audio.py market.py "$app/"
 install -m 644 i18n/*.json "$app/i18n/"
+cp -r extension "$app/extension"
 install -m 644 packaging/io.github.doeshing.Tuneup.desktop "$stage/usr/share/applications/"
 
 cat > "$stage/usr/bin/tuneup" <<'LAUNCHER'

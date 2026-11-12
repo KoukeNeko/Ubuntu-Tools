@@ -126,6 +126,12 @@ AUTOSTART_DIR = Path(GLib.get_user_config_dir()) / "autostart"
 LAUNCHER = Path(GLib.get_user_data_dir()) / "applications" / "io.github.doeshing.Tuneup.desktop"
 MAX_IMPORT_BYTES = 1_000_000
 USER_THEMES_UUID = "user-theme@gnome-shell-extensions.gcampax.github.com"
+MAGIC_LAMP_UUID = "compiz-alike-magic-lamp-effect@hermes83.github.com"
+# Tuneup 自己的 Dock 效果擴充功能：隨程式一起發佈，安裝時複製到使用者的擴充功能資料夾
+DOCK_FX_UUID = "tuneup-dock-effects@koukeneko.github.io"
+DOCK_FX_SCHEMA = "org.gnome.shell.extensions.tuneup-dock-effects"
+DOCK_FX_SOURCE = Path(__file__).resolve().parent / "extension" / DOCK_FX_UUID
+DOCK_FX_TARGET = store.EXTENSION_DIRS[0] / DOCK_FX_UUID
 CARD_WIDTH = 200          # 市集格狀檢視的卡片寬度
 SIDE_COLUMN_WIDTH = 320   # 詳細頁右欄（下載與安裝）的寬度
 NARROW_DETAIL = "max-width: 800sp"  # 詳細頁的內容區比這個窄時，雙欄改成上下排列
@@ -439,6 +445,11 @@ QUICK = [
     sw("夜間護眼", "org.gnome.settings-daemon.plugins.color", "night-light-enabled"),
     sw("動畫效果", IF, "enable-animations"),
 ]
+DOCK_FX_ITEMS = [
+    sw("滑鼠經過時放大", DOCK_FX_SCHEMA, "magnify"),
+    sp("放大倍率", DOCK_FX_SCHEMA, "magnify-scale", 1.1, 2.5, 0.1),
+    sw("啟動時彈跳", DOCK_FX_SCHEMA, "bounce"),
+]
 MODULES = [
     ("擴充功能管理", "E", True, "安裝、啟用、解除安裝、設定 GNOME 擴充功能"),
     ("系統調校", "T", True, "GNOME Tweaks 的全部功能，加上變更預覽與還原"),
@@ -457,6 +468,7 @@ EXTRA_PAGES = {
     "音效": [("audio", "音訊裝置", "audio-card-symbolic")],
 }
 POWER_PAGE = "tw%d" % next(i for i, t in enumerate(TWEAKS) if t[0] == "電源")
+DOCK_PAGE = "tw%d" % next(i for i, t in enumerate(TWEAKS) if t[0] == "頂部列與 Dock")
 SIDEBAR = (  # (id, 標題, 圖示)；None = 分隔線。調校分類直接由 TWEAKS 產生
     [("dash", "總覽", "go-home-symbolic"), ("ext", "擴充功能", "application-x-addon-symbolic"), None]
     + [entry for i, (name, icon, _groups) in enumerate(TWEAKS)
@@ -477,6 +489,8 @@ KEY_TITLES = {}
 for _item in all_items():
     KEY_TITLES.setdefault((_item[2], _item[3]), _item[1])
 KEY_TITLES[store.MASTER] = "全部擴充功能"
+for _item in DOCK_FX_ITEMS:
+    KEY_TITLES[(_item[2], _item[3])] = _item[1]
 
 
 def esc(s):
@@ -832,7 +846,7 @@ class Tuneup(Adw.Application):
             return chip("有更新", "warning")
         return None
 
-    def toggle_extension(self, e, want):
+    def toggle_extension(self, e, want, page="ext"):
         if self.loading or want == (e["state"] == EXT_STATE_ACTIVE):
             return
         message = _("已啟用 {name}").format(name=e["name"]) if want else _("已停用 {name}").format(name=e["name"])
@@ -841,7 +855,7 @@ class Tuneup(Adw.Application):
         except GLib.Error as err:
             message = _("無法套用：{error}").format(error=err.message)
         # GNOME Shell 需要一點時間更新狀態，稍後再重新讀取
-        GLib.timeout_add(400, lambda: (self.refresh("ext"), self.toast_raw(message), False)[2])
+        GLib.timeout_add(400, lambda: (self.refresh(page), self.toast_raw(message), False)[2])
 
     def set_master(self, enabled):
         if self.loading:
@@ -1356,7 +1370,46 @@ class Tuneup(Adw.Application):
             p.add(g)
         if nid == POWER_PAGE:
             p.add(self.lid_group())
+        if nid == DOCK_PAGE:
+            p.add(self.dock_effects_group())
         return p
+
+    def extension_switch(self, uuid, title, name, page):
+        """一個由擴充功能提供的效果：沒安裝時是安裝鍵，裝好後是啟用開關。"""
+        ext = next((e for e in self.exts if e["uuid"] == uuid), None)
+        if not ext:
+            b = btn("安裝")
+            b.connect("clicked", lambda button: self.install_extension(uuid, name, button, page=page))
+            return row(title, name, None, [b], data=False)
+        w = Adw.SwitchRow(title=_m(title), subtitle=esc(name), active=ext["state"] == EXT_STATE_ACTIVE)
+        w.connect("notify::active", lambda r, _p: self.toggle_extension(ext, r.get_active(), page=page))
+        return w
+
+    def install_dock_effects(self):
+        try:
+            shutil.copytree(DOCK_FX_SOURCE, DOCK_FX_TARGET, dirs_exist_ok=True)
+            subprocess.run(["glib-compile-schemas", str(DOCK_FX_TARGET / "schemas")], check=True)
+        except (OSError, subprocess.CalledProcessError) as err:
+            return self.toast_raw(_("無法安裝：{error}").format(error=str(err)))
+        self.reload(DOCK_PAGE)
+        self.toast("已安裝，登出再登入後才能開啟")
+
+    def dock_effects_group(self):
+        g = group("Dock 動畫")
+        g.add(self.extension_switch(MAGIC_LAMP_UUID, "最小化精靈效果", "Compiz alike magic lamp effect", DOCK_PAGE))
+        title, name = "放大與彈跳", "Tuneup Dock Effects"
+        if not DOCK_FX_TARGET.exists():
+            g.add(row(title, name, None, [btn("安裝", on_click=self.install_dock_effects)]))
+        elif not any(e["uuid"] == DOCK_FX_UUID for e in self.exts):
+            # GNOME Shell 在 Wayland 上只在登入時掃描新的擴充功能
+            g.add(row(title, name, None, [chip("登出後生效", "warning")]))
+        else:
+            g.add(self.extension_switch(DOCK_FX_UUID, title, name, DOCK_PAGE))
+            for item in DOCK_FX_ITEMS:
+                w = self.tweak_row(item)
+                if w:
+                    g.add(w)
+        return g
 
     def lid_group(self):
         """闔上螢幕不是 gsettings，而是靠一個登入時啟動的抑制程序，所以不走「未套用」流程。"""

@@ -601,5 +601,13 @@
   "無法移除：{names}": "Could not remove: {names}",
   "已移除 {n} 個主題，檔案在垃圾桶": "Removed {n} themes; the files are in the trash",
   "移除 {n} 個主題？": "Remove {n} themes?",
-  "會移到垃圾桶。": "They will be moved to the trash."
+  "會移到垃圾桶。": "They will be moved to the trash.",
+  "滑鼠經過時放大": "Magnify on hover",
+  "放大倍率": "Magnification",
+  "啟動時彈跳": "Bounce on launch",
+  "已安裝，登出再登入後才能開啟": "Installed; log out and back in to turn it on",
+  "Dock 動畫": "Dock animations",
+  "最小化精靈效果": "Genie effect on minimize",
+  "放大與彈跳": "Magnification and bounce",
+  "登出後生效": "After next login"
 }
