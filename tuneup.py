@@ -450,6 +450,8 @@ DOCK_FX_ITEMS = [
     sw("滑鼠經過時放大", DOCK_FX_SCHEMA, "magnify"),
     sp("放大倍率", DOCK_FX_SCHEMA, "magnify-scale", 1.1, 2.5, 0.1),
     sw("啟動時彈跳", DOCK_FX_SCHEMA, "bounce"),
+    sw("滑鼠停留時顯示視窗預覽", DOCK_FX_SCHEMA, "hover-previews"),
+    sp("預覽延遲（毫秒）", DOCK_FX_SCHEMA, "hover-delay", 100, 2000, 50),
 ]
 MODULES = [
     ("擴充功能管理", "E", True, "安裝、啟用、解除安裝、設定 GNOME 擴充功能"),
@@ -1412,6 +1414,11 @@ class Tuneup(Adw.Application):
         w.connect("notify::active", lambda r, _p: self.toggle_extension(ext, r.get_active(), page=page))
         return w
 
+    def dock_effects_outdated(self):
+        """使用者資料夾裡的擴充功能是否和隨程式發佈的版本不同。"""
+        files = [p.relative_to(DOCK_FX_SOURCE) for p in DOCK_FX_SOURCE.rglob("*") if p.is_file()]
+        return any(not (DOCK_FX_TARGET / f).is_file() or (DOCK_FX_TARGET / f).read_bytes() != (DOCK_FX_SOURCE / f).read_bytes() for f in files)
+
     def install_dock_effects(self):
         try:
             shutil.copytree(DOCK_FX_SOURCE, DOCK_FX_TARGET, dirs_exist_ok=True)
@@ -1424,9 +1431,12 @@ class Tuneup(Adw.Application):
     def dock_effects_group(self):
         g = group("Dock 動畫")
         g.add(self.extension_switch(MAGIC_LAMP_UUID, "最小化精靈效果", "Compiz alike magic lamp effect", DOCK_PAGE))
-        title, name = "放大與彈跳", "Tuneup Dock Effects"
+        title, name = "放大、彈跳與視窗預覽", "Tuneup Dock Effects"
         if not DOCK_FX_TARGET.exists():
             g.add(row(title, name, None, [btn("安裝", on_click=self.install_dock_effects)]))
+        elif self.dock_effects_outdated():
+            # 新版的程式碼要等下次登入才會被 GNOME Shell 載入
+            g.add(row(title, name, None, [btn("更新", "suggested-action", on_click=self.install_dock_effects)]))
         elif not any(e["uuid"] == DOCK_FX_UUID for e in self.exts):
             # GNOME Shell 在 Wayland 上只在登入時掃描新的擴充功能
             g.add(row(title, name, None, [chip("登出後生效", "warning")]))
