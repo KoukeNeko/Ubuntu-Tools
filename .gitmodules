@@ -1,0 +1,3 @@
+[submodule "extension/dhruva@narkagni"]
+	path = extension/dhruva@narkagni
+	url = https://github.com/KoukeNeko/dhruva.git

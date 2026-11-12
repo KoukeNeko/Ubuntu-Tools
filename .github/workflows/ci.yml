@@ -15,6 +15,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0   # the package version includes the commit count
+          submodules: true   # Dhruva is packaged from its submodule
 
       - name: Install dependencies
         run: |

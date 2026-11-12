@@ -128,11 +128,12 @@ LAUNCHER = Path(GLib.get_user_data_dir()) / "applications" / "io.github.doeshing
 MAX_IMPORT_BYTES = 1_000_000
 USER_THEMES_UUID = "user-theme@gnome-shell-extensions.gcampax.github.com"
 MAGIC_LAMP_UUID = "compiz-alike-magic-lamp-effect@hermes83.github.com"
-# Tuneup 自己的 Dock 效果擴充功能：隨程式一起發佈，安裝時複製到使用者的擴充功能資料夾
-DOCK_FX_UUID = "tuneup-dock-effects@koukeneko.github.io"
-DOCK_FX_SCHEMA = "org.gnome.shell.extensions.tuneup-dock-effects"
-DOCK_FX_SOURCE = Path(__file__).resolve().parent / "extension" / DOCK_FX_UUID
-DOCK_FX_TARGET = store.EXTENSION_DIRS[0] / DOCK_FX_UUID
+# Dhruva（GPL-3.0，https://github.com/NarkAgni/dhruva）以 git submodule 隨程式發佈，
+# 安裝時複製到使用者的擴充功能資料夾。它的設定由它自己的偏好設定視窗處理。
+DHRUVA_UUID = "dhruva@narkagni"
+DHRUVA_SOURCE = Path(__file__).resolve().parent / "extension" / DHRUVA_UUID
+DHRUVA_TARGET = store.EXTENSION_DIRS[0] / DHRUVA_UUID
+DHRUVA_SKIP = (".git", "media", "docs", "tests", "manage.sh")  # 執行時用不到的內容不安裝
 CARD_WIDTH = 200          # 市集格狀檢視的卡片寬度
 SIDE_COLUMN_WIDTH = 320   # 詳細頁右欄（下載與安裝）的寬度
 NARROW_DETAIL = "max-width: 800sp"  # 詳細頁的內容區比這個窄時，雙欄改成上下排列
@@ -446,13 +447,6 @@ QUICK = [
     sw("夜間護眼", "org.gnome.settings-daemon.plugins.color", "night-light-enabled"),
     sw("動畫效果", IF, "enable-animations"),
 ]
-DOCK_FX_ITEMS = [
-    sw("滑鼠經過時放大", DOCK_FX_SCHEMA, "magnify"),
-    sp("放大倍率", DOCK_FX_SCHEMA, "magnify-scale", 1.1, 2.5, 0.1),
-    sw("啟動時彈跳", DOCK_FX_SCHEMA, "bounce"),
-    sw("滑鼠停留時顯示視窗預覽", DOCK_FX_SCHEMA, "hover-previews"),
-    sp("預覽延遲（毫秒）", DOCK_FX_SCHEMA, "hover-delay", 100, 2000, 50),
-]
 MODULES = [
     ("擴充功能管理", "E", True, "安裝、啟用、解除安裝、設定 GNOME 擴充功能"),
     ("系統調校", "T", True, "GNOME Tweaks 的全部功能，加上變更預覽與還原"),
@@ -492,8 +486,6 @@ KEY_TITLES = {}
 for _item in all_items():
     KEY_TITLES.setdefault((_item[2], _item[3]), _item[1])
 KEY_TITLES[store.MASTER] = "全部擴充功能"
-for _item in DOCK_FX_ITEMS:
-    KEY_TITLES[(_item[2], _item[3])] = _item[1]
 
 
 def esc(s):
@@ -928,6 +920,16 @@ class Tuneup(Adw.Application):
         bus.call(store.SHELL_BUS[0], store.SHELL_BUS[1], store.SHELL_BUS[0], "InstallRemoteExtension",
                  GLib.Variant("(s)", (uuid,)), None, Gio.DBusCallFlags.NONE, 120000, None, finished)
 
+    def open_extension_prefs(self, e):
+        """直接請 GNOME Shell 開啟，失敗時才看得到原因；指令列工具不論成敗都不回報。"""
+        try:
+            store.shell_call("OpenExtensionPrefs", GLib.Variant("(ssa{sv})", (e["uuid"], "", {})), timeout=10000)
+        except GLib.Error as err:
+            if "Already showing" in err.message:  # GNOME Shell 一次只允許一個偏好設定視窗
+                self.toast("已經有一個偏好設定視窗開著，先關閉它")
+            else:
+                self.toast_raw(_("無法開啟：{error}").format(error=err.message))
+
     def ext_detail(self, i):
         e = self.exts[i]
         pg = Adw.PreferencesPage()
@@ -952,7 +954,7 @@ class Tuneup(Adw.Application):
         sw_row.connect("notify::active", lambda w, _p: self.toggle_extension(e, w.get_active()))
         g.add(sw_row)
         if e["has_prefs"]:
-            g.add(row("開啟偏好設定", suffix=[btn("開啟", on_click=lambda: subprocess.Popen(["gnome-extensions", "prefs", e["uuid"]]))]))
+            g.add(row("開啟偏好設定", suffix=[btn("開啟", on_click=lambda: self.open_extension_prefs(e))]))
         pg.add(g)
 
         g = group("資訊")
@@ -1400,7 +1402,7 @@ class Tuneup(Adw.Application):
         if nid == POWER_PAGE:
             p.add(self.lid_group())
         if nid == DOCK_PAGE:
-            p.add(self.dock_effects_group())
+            p.add(self.dock_extensions_group())
         return p
 
     def extension_switch(self, uuid, title, name, page):
@@ -1414,38 +1416,46 @@ class Tuneup(Adw.Application):
         w.connect("notify::active", lambda r, _p: self.toggle_extension(ext, r.get_active(), page=page))
         return w
 
-    def dock_effects_outdated(self):
-        """使用者資料夾裡的擴充功能是否和隨程式發佈的版本不同。"""
-        files = [p.relative_to(DOCK_FX_SOURCE) for p in DOCK_FX_SOURCE.rglob("*") if p.is_file()]
-        return any(not (DOCK_FX_TARGET / f).is_file() or (DOCK_FX_TARGET / f).read_bytes() != (DOCK_FX_SOURCE / f).read_bytes() for f in files)
+    def dhruva_files(self):
+        """隨程式發佈的 Dhruva 裡要安裝的檔案（相對路徑）；submodule 還沒取出時是空的。"""
+        if not (DHRUVA_SOURCE / "metadata.json").is_file():
+            return []
+        return [p.relative_to(DHRUVA_SOURCE) for p in DHRUVA_SOURCE.rglob("*")
+                if p.is_file() and not set(p.relative_to(DHRUVA_SOURCE).parts) & set(DHRUVA_SKIP)]
 
-    def install_dock_effects(self):
+    def dhruva_outdated(self, files):
+        return any(not (DHRUVA_TARGET / f).is_file() or (DHRUVA_TARGET / f).read_bytes() != (DHRUVA_SOURCE / f).read_bytes() for f in files)
+
+    def install_dhruva(self):
         try:
-            shutil.copytree(DOCK_FX_SOURCE, DOCK_FX_TARGET, dirs_exist_ok=True)
-            subprocess.run(["glib-compile-schemas", str(DOCK_FX_TARGET / "schemas")], check=True)
+            for f in self.dhruva_files():
+                (DHRUVA_TARGET / f).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(DHRUVA_SOURCE / f, DHRUVA_TARGET / f)
+            subprocess.run(["glib-compile-schemas", str(DHRUVA_TARGET / "schemas")], check=True)
         except (OSError, subprocess.CalledProcessError) as err:
             return self.toast_raw(_("無法安裝：{error}").format(error=str(err)))
         self.reload(DOCK_PAGE)
         self.toast("已安裝，登出再登入後才能開啟")
 
-    def dock_effects_group(self):
-        g = group("Dock 動畫")
-        g.add(self.extension_switch(MAGIC_LAMP_UUID, "最小化精靈效果", "Compiz alike magic lamp effect", DOCK_PAGE))
-        title, name = "放大、彈跳與視窗預覽", "Tuneup Dock Effects"
-        if not DOCK_FX_TARGET.exists():
-            g.add(row(title, name, None, [btn("安裝", on_click=self.install_dock_effects)]))
-        elif self.dock_effects_outdated():
+    def dock_extensions_group(self):
+        g = group("Dock 擴充功能")
+        title, name = "Dhruva", "narkagni"
+        files = self.dhruva_files()
+        ext = next((e for e in self.exts if e["uuid"] == DHRUVA_UUID), None)
+        if files and not DHRUVA_TARGET.exists():
+            g.add(row(title, name, None, [btn("安裝", on_click=self.install_dhruva)], data=True))
+        elif files and self.dhruva_outdated(files):
             # 新版的程式碼要等下次登入才會被 GNOME Shell 載入
-            g.add(row(title, name, None, [btn("更新", "suggested-action", on_click=self.install_dock_effects)]))
-        elif not any(e["uuid"] == DOCK_FX_UUID for e in self.exts):
+            g.add(row(title, name, None, [btn("更新", "suggested-action", on_click=self.install_dhruva)], data=True))
+        elif files and not ext:
             # GNOME Shell 在 Wayland 上只在登入時掃描新的擴充功能
-            g.add(row(title, name, None, [chip("登出後生效", "warning")]))
+            g.add(row(title, name, None, [chip("登出後生效", "warning")], data=True))
         else:
-            g.add(self.extension_switch(DOCK_FX_UUID, title, name, DOCK_PAGE))
-            for item in DOCK_FX_ITEMS:
-                w = self.tweak_row(item)
-                if w:
-                    g.add(w)
+            # 已經載入；或這份程式沒有附 Dhruva，改從 extensions.gnome.org 安裝
+            g.add(self.extension_switch(DHRUVA_UUID, title, name, DOCK_PAGE))
+            if ext and ext["has_prefs"]:
+                g.add(row("開啟偏好設定", suffix=[btn("開啟", on_click=lambda: self.open_extension_prefs(ext))]))
+        g.add(self.extension_switch(MAGIC_LAMP_UUID, "最小化精靈效果", "Compiz alike magic lamp effect", DOCK_PAGE))
         return g
 
     def lid_group(self):
@@ -2613,8 +2623,11 @@ class Tuneup(Adw.Application):
         self.nav_list.set_filter_func(match)
 
     def show_about(self):
-        Adw.AboutDialog(application_name="Tuneup", version=VERSION, application_icon="preferences-system",
-                        comments=_("Ubuntu 的調校、擴充功能與系統管理工具。每一次變更都看得見、退得回。")).present(self.win)
+        about = Adw.AboutDialog(application_name="Tuneup", version=VERSION, application_icon="preferences-system",
+                                license_type=Gtk.License.GPL_3_0, website="https://github.com/KoukeNeko/Ubuntu-Tools",
+                                comments=_("Ubuntu 的調校、擴充功能與系統管理工具。每一次變更都看得見、退得回。"))
+        about.add_legal_section("Dhruva", "Copyright © 2026 NarkAgni\nhttps://github.com/NarkAgni/dhruva", Gtk.License.GPL_3_0, None)
+        about.present(self.win)
 
     def flip_theme(self):
         m = Adw.StyleManager.get_default()

@@ -26,7 +26,14 @@ app="$stage/usr/share/tuneup"
 install -d "$app/i18n" "$stage/usr/bin" "$stage/usr/share/applications" "$stage/DEBIAN"
 install -m 644 tuneup.py store.py system.py audio.py market.py "$app/"
 install -m 644 i18n/*.json "$app/i18n/"
-cp -r extension "$app/extension"
+# Dhruva is a git submodule; ship what it needs at run time, with its licence.
+dhruva=extension/dhruva@narkagni
+[ -f "$dhruva/metadata.json" ] || { echo "Dhruva is missing: run git submodule update --init" >&2; exit 1; }
+mkdir -p "$app/$dhruva"
+tar -C "$dhruva" --exclude=.git --exclude=media --exclude=docs --exclude=tests --exclude=manage.sh -cf - . | tar -C "$app/$dhruva" -xf -
+
+install -d "$stage/usr/share/doc/tuneup"
+install -m 644 packaging/copyright "$stage/usr/share/doc/tuneup/copyright"
 install -m 644 packaging/io.github.doeshing.Tuneup.desktop "$stage/usr/share/applications/"
 
 cat > "$stage/usr/bin/tuneup" <<'LAUNCHER'
