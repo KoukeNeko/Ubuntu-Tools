@@ -117,7 +117,6 @@
   "{name} 與目前的 GNOME Shell 不相容": "{name} is not compatible with this GNOME Shell",
   "{n} 個擴充功能有新版本": "{n} extensions have updates",
   "沒有待處理的事項": "Nothing needs attention",
-  "擴充功能都正常運作，也沒有可用的更新": "All extensions are working and there are no updates",
   "錯誤": "Error",
   "錯誤訊息": "Error message",
   "開啟偏好設定": "Open preferences",
@@ -422,8 +421,6 @@
   "建立系統還原點？": "Create a system restore point?",
   "Timeshift 會把目前的系統檔案複製到它設定的備份位置。": "Timeshift copies the current system files to its configured backup location.",
   "已建立還原點": "Restore point created",
-  "管理還原點": "Manage restore points",
-  "列出、還原、刪除與排程，在 Timeshift 中進行": "List, restore, delete and schedule in Timeshift",
   "立即備份": "Back up now",
   "使用「備份」目前的設定": "Uses the current Backups settings",
   "備份": "Back Up",
@@ -609,5 +606,11 @@
   "Dock 動畫": "Dock animations",
   "最小化精靈效果": "Genie effect on minimize",
   "放大與彈跳": "Magnification and bounce",
-  "登出後生效": "After next login"
+  "登出後生效": "After next login",
+  "還原與排程": "Restore and schedule",
+  "刪除這個還原點？": "Delete this restore point?",
+  "已刪除": "Deleted",
+  "沒有紀錄": "none",
+  "還原點 {a} · 個人檔案 {b}": "Restore point {a} · Files {b}",
+  "超過 {n} 天沒有備份": "No backup in over {n} days"
 }

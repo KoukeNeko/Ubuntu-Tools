@@ -22,6 +22,7 @@ import os
 import shutil
 import subprocess
 import threading
+import time
 import urllib.parse
 from pathlib import Path
 
@@ -809,6 +810,12 @@ class Tuneup(Adw.Application):
         g.add(self.nav_row("目前設定檔", pf_sub, "pf"))
         hist_sub = _("{n} 筆紀錄，最近一次在 {time}").format(n=len(history), time=when(history[-1]["time"])) if history else _("尚無紀錄")
         g.add(self.nav_row("歷史", hist_sub, "hist"))
+        tools = system.backup_tools()
+        points = system.restore_points() if tools["timeshift"] else []
+        file_backup = system.last_file_backup() if tools["deja-dup"] else None
+        never = _("沒有紀錄")
+        g.add(self.nav_row("備份與還原", _("還原點 {a} · 個人檔案 {b}").format(
+            a=when(points[0]["time"]) if points else never, b=when(file_backup) if file_backup else never), "backup"))
         p.add(g)
 
         g = group("待處理")
@@ -818,8 +825,15 @@ class Tuneup(Adw.Application):
         if updates:
             g.add(row(_("{n} 個擴充功能有新版本").format(n=len(updates)), ", ".join(e["name"] for e in updates),
                       Gtk.Image(icon_name="folder-download-symbolic"), [btn("檢視", on_click=lambda: self.goto("ext"))], data=True))
-        if not broken and not updates:
-            g.add(row("沒有待處理的事項", "擴充功能都正常運作，也沒有可用的更新", Gtk.Image(icon_name="emblem-ok-symbolic")))
+        stale = time.time() - system.STALE_BACKUP_DAYS * 86400
+        overdue = [title for installed, latest, title in (
+            (tools["timeshift"], points[0]["time"] if points else 0, "系統還原點"),
+            (tools["deja-dup"], file_backup or 0, "個人檔案備份")) if installed and latest < stale]
+        for title in overdue:
+            g.add(row(title, _("超過 {n} 天沒有備份").format(n=system.STALE_BACKUP_DAYS), Gtk.Image(icon_name="dialog-warning-symbolic"),
+                      [btn("檢視", on_click=lambda: self.goto("backup"))], data=False))
+        if not broken and not updates and not overdue:
+            g.add(row("沒有待處理的事項", None, Gtk.Image(icon_name="emblem-ok-symbolic")))
         p.add(g)
 
         g = group("快速開關")
@@ -1973,8 +1987,12 @@ class Tuneup(Adw.Application):
             g.add(row("建立還原點", "需要管理員權限，可能要幾分鐘", None, [btn("建立", "suggested-action", on_click=lambda: self.run_system(
                 "建立系統還原點？", _("Timeshift 會把目前的系統檔案複製到它設定的備份位置。"), "建立",
                 lambda: system.run_root(["timeshift", "--create", "--comments", "Tuneup", "--scripted"], timeout=3600), "backup", "已建立還原點"))]))
-            g.add(row("管理還原點", "列出、還原、刪除與排程，在 Timeshift 中進行", None,
-                      [btn("開啟", on_click=lambda: subprocess.Popen(["timeshift-launcher"]))]))
+            g.add(row("還原與排程", "Timeshift", None, [btn("開啟", on_click=lambda: subprocess.Popen(["timeshift-launcher"]))]))
+            for point in system.restore_points():
+                b = btn(None, "flat", "user-trash-symbolic", on_click=lambda point=point: self.run_system(
+                    "刪除這個還原點？", when(point["time"]) + "\n" + _("這個動作無法還原。"), "刪除",
+                    lambda: system.delete_restore_point(point["name"]), "backup", "已刪除"))
+                g.add(row(when(point["time"]), point["comments"] or point["tags"], Gtk.Image(icon_name="document-open-recent-symbolic"), [b], data=True))
         else:
             g.add(self.install_row("Timeshift", "timeshift", "Tuneup 透過 Timeshift 建立系統還原點"))
         p.add(g)

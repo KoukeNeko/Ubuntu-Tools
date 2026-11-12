@@ -98,6 +98,25 @@ class SystemTest(unittest.TestCase):
         self.assertEqual(system.parse_sources_list(text), [{"uri": "https://repo/", "suites": "stable", "enabled": True},
                                                             {"uri": "http://old/", "suites": "focal", "enabled": False}])
 
+    def test_restore_points(self):
+        import tempfile
+        from pathlib import Path
+        base = Path(tempfile.mkdtemp(prefix="tuneup-ts-"))
+        for name, created in (("2026-11-10_08-00-00", "100"), ("2026-11-12_10-37-52", "300")):
+            (base / name).mkdir()
+            (base / name / "info.json").write_text('{"created": "%s", "tags": "ondemand", "comments": "Tuneup"}' % created)
+        (base / "half-made").mkdir()
+        (base / "broken").mkdir()
+        (base / "broken" / "info.json").write_text("{not json")
+        points = system.restore_points(base)
+        self.assertEqual([(p["name"], p["time"]) for p in points], [("2026-11-12_10-37-52", 300), ("2026-11-10_08-00-00", 100)])
+        self.assertEqual(system.restore_points(base / "missing"), [])
+
+    def test_iso_time(self):
+        self.assertEqual(system.parse_iso_time("1970-01-01T00:01:40+00:00"), 100)
+        self.assertIsNone(system.parse_iso_time(""))
+        self.assertIsNone(system.parse_iso_time("yesterday"))
+
     def test_missing_command(self):
         self.assertEqual(system.run(["tuneup-no-such-command"]), (-1, ""))
 

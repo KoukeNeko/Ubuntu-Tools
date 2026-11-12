@@ -374,3 +374,43 @@ def set_lid_ignored(on):
         subprocess.Popen(LID_COMMAND, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     else:
         LID_AUTOSTART.unlink(missing_ok=True)
+
+
+# ---------- 還原點與備份狀態 ----------
+# Timeshift 把還原點放在備份裝置的 /timeshift/snapshots；備份裝置就是系統碟時不需要權限就能讀。
+TIMESHIFT_SNAPSHOTS = Path("/timeshift/snapshots")
+STALE_BACKUP_DAYS = 30
+
+
+def restore_points(base=TIMESHIFT_SNAPSHOTS):
+    """[{"name", "time", "tags", "comments"}]，最近的在前；讀不到時是空清單。"""
+    points = []
+    try:
+        folders = [d for d in base.iterdir() if d.is_dir()]
+    except OSError:
+        return points
+    for folder in folders:
+        try:
+            info = json.loads((folder / "info.json").read_text())
+            points.append({"name": folder.name, "time": int(info.get("created", 0)),
+                           "tags": info.get("tags", ""), "comments": info.get("comments", "")})
+        except (OSError, ValueError):
+            continue  # 建立到一半或損毀的還原點
+    return sorted(points, key=lambda p: p["time"], reverse=True)
+
+
+def delete_restore_point(name):
+    return run_root(["timeshift", "--delete", "--snapshot", name, "--scripted"], timeout=3600)
+
+
+def parse_iso_time(text):
+    """Déjà Dup 記錄的時間（ISO 8601）-> epoch 秒；空字串或格式不對時回傳 None。"""
+    from datetime import datetime
+    try:
+        return int(datetime.fromisoformat(text).timestamp()) if text else None
+    except ValueError:
+        return None
+
+
+def last_file_backup():
+    return parse_iso_time(run(["gsettings", "get", "org.gnome.DejaDup", "last-backup"])[1].strip().strip("'"))
