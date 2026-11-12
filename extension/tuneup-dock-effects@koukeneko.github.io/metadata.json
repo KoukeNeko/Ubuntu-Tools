@@ -1,0 +1,8 @@
+{
+  "uuid": "tuneup-dock-effects@koukeneko.github.io",
+  "name": "Tuneup Dock Effects",
+  "description": "Magnify dock icons under the pointer and bounce an icon while its application starts. Works with Ubuntu Dock and Dash to Dock.",
+  "shell-version": ["47", "48", "49", "50", "51"],
+  "settings-schema": "org.gnome.shell.extensions.tuneup-dock-effects",
+  "url": "https://github.com/KoukeNeko/Ubuntu-Tools"
+}

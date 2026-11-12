@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.tuneup-dock-effects" path="/org/gnome/shell/extensions/tuneup-dock-effects/">
+    <key name="magnify" type="b">
+      <default>true</default>
+      <summary>Magnify icons under the pointer</summary>
+    </key>
+    <key name="magnify-scale" type="d">
+      <range min="1.1" max="2.5"/>
+      <default>1.6</default>
+      <summary>Scale of the icon directly under the pointer</summary>
+    </key>
+    <key name="bounce" type="b">
+      <default>true</default>
+      <summary>Bounce an icon while its application starts</summary>
+    </key>
+  </schema>
+</schemalist>
