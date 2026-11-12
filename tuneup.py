@@ -124,7 +124,6 @@ APP_ID = "io.github.doeshing.Tuneup"
 LAUNCHER = Path(GLib.get_user_data_dir()) / "applications" / f"{APP_ID}.desktop"
 MAX_IMPORT_BYTES = 1_000_000
 USER_THEMES_UUID = "user-theme@gnome-shell-extensions.gcampax.github.com"
-MAGIC_LAMP_UUID = "compiz-alike-magic-lamp-effect@hermes83.github.com"
 # Dhruva（GPL-3.0，https://github.com/NarkAgni/dhruva）以 git submodule 隨程式發佈，
 # 安裝時複製到使用者的擴充功能資料夾。它的設定由它自己的偏好設定視窗處理。
 DHRUVA_UUID = "dhruva@narkagni"
@@ -1469,7 +1468,6 @@ class Tuneup(Adw.Application):
             g.add(self.extension_switch(DHRUVA_UUID, title, name, DOCK_PAGE))
             if ext and ext["has_prefs"]:
                 g.add(row("開啟偏好設定", suffix=[btn("開啟", on_click=lambda: self.open_extension_prefs(ext))]))
-        g.add(self.extension_switch(MAGIC_LAMP_UUID, "最小化精靈效果", "Compiz alike magic lamp effect", DOCK_PAGE))
         return g
 
     def sidebar_blur_group(self):
