@@ -14,5 +14,14 @@
       <default>true</default>
       <summary>Bounce an icon while its application starts</summary>
     </key>
+    <key name="hover-previews" type="b">
+      <default>true</default>
+      <summary>Show window previews when the pointer rests on an icon</summary>
+    </key>
+    <key name="hover-delay" type="i">
+      <range min="100" max="2000"/>
+      <default>400</default>
+      <summary>Milliseconds the pointer must rest before previews open</summary>
+    </key>
   </schema>
 </schemalist>
