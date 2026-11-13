@@ -499,6 +499,7 @@ def all_items():
 
 
 ALL_KEYS = list(dict.fromkeys((item[2], item[3]) for item in all_items()))
+PROFILE_EXTENSION_SETTINGS = "extension_settings"  # 設定檔裡的標記：這份也記錄了擴充功能自己的設定
 KEY_TITLES = {}
 for _item in all_items():
     KEY_TITLES.setdefault((_item[2], _item[3]), _item[1])
@@ -2424,13 +2425,21 @@ class Tuneup(Adw.Application):
     # ---------- 設定檔 ----------
     def profile_diff(self, profile):
         names = {e["uuid"]: e["name"] for e in self.exts}
-        return store.profile_changes(profile, ALL_KEYS, self.ext_states(), names)
+        return store.profile_changes(profile, self.profile_keys(profile), self.ext_states(), names)
+
+    def profile_keys(self, profile=None):
+        """設定檔涵蓋的設定。較早建立的設定檔沒有記錄擴充功能的設定，套用時不能把它們當成「要還原為預設值」。"""
+        if profile is not None and not profile.get(PROFILE_EXTENSION_SETTINGS):
+            return ALL_KEYS
+        return list(dict.fromkeys(ALL_KEYS + store.extension_keys()))
 
     def find_profile(self, name):
         return next((pf for pf in self.profiles if pf["name"] == name), None)
 
     def create_profile(self, name):
-        store.save_profile(store.capture(name, ALL_KEYS, self.ext_states()))
+        profile = store.capture(name, self.profile_keys(), self.ext_states())
+        profile[PROFILE_EXTENSION_SETTINGS] = True
+        store.save_profile(profile)
         self.reload("pf")
         self.toast_raw(_("已儲存設定檔「{name}」").format(name=name))
 

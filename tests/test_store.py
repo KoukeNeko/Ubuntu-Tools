@@ -64,6 +64,23 @@ class StoreTest(unittest.TestCase):
         self.assertFalse(self.get("clock-show-seconds"))
         self.assertEqual(len(entry["changes"]), 2)
 
+    def test_extension_keys_lists_what_installed_extensions_bring(self):
+        schemas = store.EXTENSION_DIRS[0] / "dock@test" / "schemas"
+        schemas.mkdir(parents=True)
+        (schemas / "dock.gschema.xml").write_text(
+            '<schemalist><schema id="org.test.dock" path="/org/test/dock/">'
+            '<key name="transparent" type="b"><default>false</default></key></schema></schemalist>')
+        subprocess.run(["glib-compile-schemas", str(schemas)], check=True)
+        store.forget_absent()
+        self.assertIn(("org.test.dock", "transparent"), store.extension_keys())
+
+        keys = [("org.test.dock", "transparent")]
+        store.apply("tweak", [store.gsettings_change("org.test.dock", "transparent", "true")])
+        profile = store.capture("dock", keys, {})
+        store.settings("org.test.dock").reset("transparent")
+        store.apply("profile", store.profile_changes(profile, keys, {}, {}))
+        self.assertTrue(store.settings("org.test.dock").get_boolean("transparent"))
+
     def test_profile_roundtrip(self):
         keys = [(IF, "cursor-size"), (IF, "clock-show-seconds")]
         store.apply("tweak", [change("cursor-size", 48)])

@@ -37,6 +37,22 @@ def extension_schema(schema):
     return None
 
 
+def extension_keys():
+    """已安裝的擴充功能自己帶的所有設定：[(schema, key)]。"""
+    default = Gio.SettingsSchemaSource.get_default()
+    keys = {}
+    for base in EXTENSION_DIRS:
+        for compiled in sorted(base.glob("*/schemas/gschemas.compiled")):
+            try:
+                source = Gio.SettingsSchemaSource.new_from_directory(str(compiled.parent), default, False)
+            except GLib.Error:
+                continue  # 這個擴充功能的 schema 檔損毀，不影響其他的
+            for schema in source.list_schemas(False)[0]:
+                for key in source.lookup(schema, False).list_keys():
+                    keys[(schema, key)] = None
+    return list(keys)
+
+
 def settings(schema):
     """取得 Gio.Settings；系統與已安裝的擴充功能都沒有這個 schema 時回傳 None。"""
     if schema in _absent:
