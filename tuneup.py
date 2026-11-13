@@ -288,8 +288,6 @@ IDLE_ACTIONS = [("暫停", "suspend"), ("休眠", "hibernate"), ("關機", "shut
 DEPENDS = {
     (IF, "font-rgba-order"): ((IF, "font-antialiasing"), lambda v: v == "rgba"),
     (WM, "num-workspaces"): ((MUTTER, "dynamic-workspaces"), lambda v: not v),
-    (PANEL, "spacing"): ((PANEL, "custom-spacing"), lambda v: v),
-    (PANEL, "item-spacing"): ((PANEL, "custom-spacing"), lambda v: v),
 }
 
 TWEAKS = [  # (分類, 圖示, [(群組, [項目])])；群組可以多帶一個說明：(群組, 說明, [項目])
@@ -1819,6 +1817,7 @@ class Tuneup(Adw.Application):
                    "a11y": "協助工具", "keyboard": "輸入法", "dwellClick": "停留點擊",
                    "screenRecording": "螢幕錄影", "screenSharing": "螢幕分享"}
     PANEL_BOXES = [("left", "左側"), ("center", "中間"), ("right", "右側")]
+    PANEL_DEFAULT_PADDING = 12  # 還沒指定間距的區，數字欄先顯示 GNOME 預設的值
     PANEL_ALWAYS_SHOWN = {"quickSettings"}  # 關機、網路、音量都在裡面，和 macOS 的控制中心一樣不能隱藏
 
     def page_panel(self):
@@ -1832,24 +1831,20 @@ class Tuneup(Adw.Application):
             g.add(row(title, name, None, [chip("登出後生效", "warning")]))
             return p
         g.add(self.extension_switch(PANEL_UUID, title, name, "panel"))
-        if ext["state"] != EXT_STATE_ACTIVE or not store.has_key(PANEL, "items"):
+        # 剛更新套件、還沒重新登入時，執行中的擴充功能和它的設定可能還是上一版的
+        if ext["state"] != EXT_STATE_ACTIVE or not store.has_key(PANEL, "box-spacing"):
             return p
         try:
             items = json.loads(store.settings(PANEL).get_string("items"))
         except ValueError:
             items = []  # 擴充功能還沒寫入，或內容被改壞；下次頂部列有變動時會重寫
 
-        g = group("間距")
-        custom, spacing_row = (self.tweak_row(item) for item in (sw("自訂間距", PANEL, "custom-spacing"), sp("間距", PANEL, "spacing", 0, 24, 1)))
-        g.add(custom)
-        g.add(spacing_row)
-        p.add(g)
-
         order, hidden = self.shown_value(PANEL, "order"), self.shown_value(PANEL, "hidden")
         boxes = {box: panel_arranged([i["id"] for i in items if i["box"] == box], order) for box, _t in self.PANEL_BOXES}
         names = {i["id"]: _(self.PANEL_NAMES[i["id"]]) if i["id"] in self.PANEL_NAMES else i["name"] for i in items}
         self.page_words["panel"] += [n.lower() for n in names.values()]
-        following = []  # 沒有個別間距、跟著統一間距的項目
+        following = {box: [] for box, _t in self.PANEL_BOXES}  # 各區裡沒有個別間距、跟著那一區間距的項目
+        spins = {box: [] for box, _t in self.PANEL_BOXES}
 
         def move(box, k, step):
             ids = list(boxes[box])
@@ -1861,32 +1856,59 @@ class Tuneup(Adw.Application):
             current = self.shown_value(PANEL, "hidden")
             self.stage(PANEL, "hidden", [i for i in current if i != item_id] + ([] if on else [item_id]))
 
-        def set_padding(item_id, spin):
+        def box_padding(box):
+            """這一區的間距；None 代表不指定，交給 Shell 的主題。"""
+            return self.shown_value(PANEL, "box-spacing").get(box)
+
+        def set_padding(box, item_id, spin):
             overrides = dict(self.shown_value(PANEL, "item-spacing"))
             padding = int(spin.get_value())
-            if padding == self.shown_value(PANEL, "spacing"):
+            if padding == box_padding(box):
                 overrides.pop(item_id, None)
-                if spin not in following:
-                    following.append(spin)
+                if spin not in following[box]:
+                    following[box].append(spin)
             else:
                 overrides[item_id] = padding
-                if spin in following:
-                    following.remove(spin)
+                if spin in following[box]:
+                    following[box].remove(spin)
             self.stage(PANEL, "item-spacing", overrides)
 
-        overrides, spacing = self.shown_value(PANEL, "item-spacing"), self.shown_value(PANEL, "spacing")
+        def set_box_padding(box, custom, spin):
+            spacing = dict(self.shown_value(PANEL, "box-spacing"))
+            if custom.get_active():
+                spacing[box] = int(spin.get_value())
+            else:
+                spacing.pop(box, None)
+            self.stage(PANEL, "box-spacing", spacing)
+            spin.set_sensitive(custom.get_active())
+            for item_spin in spins[box]:
+                item_spin.set_sensitive(custom.get_active())
+            for item_spin in list(following[box]):
+                item_spin.set_value(spin.get_value())
+
+        overrides = self.shown_value(PANEL, "item-spacing")
         for box, box_title in self.PANEL_BOXES:
             if not boxes[box]:
                 continue
             g = group(box_title)
+            padding = box_padding(box)
+            box_spin = Gtk.SpinButton.new_with_range(0, 24, 1)
+            box_spin.set_valign(Gtk.Align.CENTER)
+            box_spin.set_value(self.PANEL_DEFAULT_PADDING if padding is None else padding)
+            box_spin.set_sensitive(padding is not None)
+            custom = Gtk.Switch(active=padding is not None, valign=Gtk.Align.CENTER)
+            box_spin.connect("value-changed", lambda s, box=box, custom=custom: set_box_padding(box, custom, s))
+            custom.connect("notify::active", lambda c, _p, box=box, box_spin=box_spin: set_box_padding(box, c, box_spin))
+            g.add(row("自訂間距", suffix=[box_spin, custom]))
             for k, item_id in enumerate(boxes[box]):
                 spin = Gtk.SpinButton.new_with_range(0, 24, 1)
                 spin.set_valign(Gtk.Align.CENTER)
-                spin.set_value(overrides.get(item_id, spacing))
-                spin.connect("value-changed", lambda s, item_id=item_id: set_padding(item_id, s))
-                self.key_widgets.setdefault((PANEL, "item-spacing"), []).append(spin)
+                spin.set_value(overrides.get(item_id, box_spin.get_value()))
+                spin.set_sensitive(padding is not None)
+                spin.connect("value-changed", lambda s, box=box, item_id=item_id: set_padding(box, item_id, s))
+                spins[box].append(spin)
                 if item_id not in overrides:
-                    following.append(spin)
+                    following[box].append(spin)
                 up = btn(None, "flat", "go-up-symbolic", on_click=lambda box=box, k=k: move(box, k, -1))
                 up.set_tooltip_text(_("上移"))
                 up.set_sensitive(k > 0)
@@ -1900,7 +1922,6 @@ class Tuneup(Adw.Application):
                     suffix.append(shown)
                 g.add(row(names[item_id], suffix=suffix, data=True))
             p.add(g)
-        spacing_row.connect("notify::value", lambda w, _p: [s.set_value(w.get_value()) for s in list(following)])
         return p
 
     def page_xkb(self):

@@ -10,18 +10,15 @@
       <summary>Item order</summary>
       <description>Items listed here are arranged in this order within their own box. Others keep their place.</description>
     </key>
-    <key name="custom-spacing" type="b">
-      <default>false</default>
-      <summary>Custom spacing</summary>
-    </key>
-    <key name="spacing" type="i">
-      <range min="0" max="24"/>
-      <default>12</default>
-      <summary>Padding on each side of every item, in pixels</summary>
+    <key name="box-spacing" type="a{si}">
+      <default>{}</default>
+      <summary>Padding on each side of the items in a box, in pixels</summary>
+      <description>Keyed by left, center and right. A box that is not listed keeps the padding of the shell theme.</description>
     </key>
     <key name="item-spacing" type="a{si}">
       <default>{}</default>
-      <summary>Padding of single items, overriding spacing</summary>
+      <summary>Padding of single items, overriding their box</summary>
+      <description>Only used in a box that has a padding of its own.</description>
     </key>
     <key name="items" type="s">
       <default>'[]'</default>

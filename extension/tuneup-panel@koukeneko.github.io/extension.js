@@ -1,5 +1,5 @@
-// Top bar manager: hide items, reorder them within their box, and give every
-// item the same padding, with overrides for single items.
+// Top bar manager: hide items, reorder them within their box, and give the
+// items of a box the same padding, with overrides for single items.
 //
 // Items go by their status area role. App indicators get theirs from a D-Bus
 // name that changes every session, so they go by the id the app reports.
@@ -137,11 +137,12 @@ export default class PanelManager extends Extension {
     }
 
     _applySpacing(items) {
-        const custom = this._settings.get_boolean('custom-spacing');
-        const spacing = this._settings.get_int('spacing');
+        const boxSpacing = this._settings.get_value('box-spacing').deepUnpack();
         const overrides = this._settings.get_value('item-spacing').deepUnpack();
-        for (const {id, button} of items) {
-            if (!custom) {
+        for (const {id, button, box} of items) {
+            const spacing = boxSpacing[box];
+            // A box without a padding of its own is left to the shell theme.
+            if (spacing === undefined) {
                 this._unstyle(button);
                 continue;
             }
