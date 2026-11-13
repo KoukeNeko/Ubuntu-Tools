@@ -333,6 +333,7 @@
   "刪除這個設定檔？": "Delete this profile?",
   "「{name}」會移到垃圾桶，系統設定不受影響。": "“{name}” will be moved to the trash. System settings are not affected.",
   "無法匯入：{error}": "Could not import: {error}",
+  "已經有設定檔「{name}」": "A profile named “{name}” already exists",
   "不是有效的 Tuneup 設定檔": "not a valid Tuneup profile",
   "已匯入設定檔「{name}」，尚未套用": "Imported profile “{name}” — not applied yet",
   "建立設定檔": "Create Profile",

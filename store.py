@@ -9,10 +9,13 @@ from pathlib import Path
 from gi.repository import Gio, GLib
 
 import audio
+from system import write_text
 
 DATA_DIR = Path(GLib.get_user_data_dir()) / "tuneup"
 HISTORY_FILE = DATA_DIR / "history.json"
 PROFILE_DIR = DATA_DIR / "profiles"
+MAX_HISTORY = 500  # 每次套用都重寫整份歷史，太舊的不留
+EXTENSION_SETTINGS = "extension_settings"  # 設定檔裡的標記：這份也記錄了擴充功能自己的設定
 SHELL_BUS = ("org.gnome.Shell.Extensions", "/org/gnome/Shell/Extensions")
 MASTER = ("org.gnome.shell", "disable-user-extensions")
 
@@ -137,14 +140,22 @@ def apply(action, changes, label=""):
     changes = [c for c in changes if c["old"] != c["new"]]
     if not changes:
         return None
-    for c in changes:
-        _write(c, c["new"])
-    Gio.Settings.sync()
+    written = []
+    try:
+        for c in changes:
+            _write(c, c["new"])
+            written.append(c)
+    finally:
+        # 中途失敗時，已經寫入的那幾項照樣記下來，否則它們改了卻無從還原
+        Gio.Settings.sync()
+        entry = _record(action, label, written) if written else None
+    return entry
+
+
+def _record(action, label, changes):
     entry = {"id": time.time_ns(), "time": int(time.time()), "action": action, "label": label, "changes": changes}
-    history = load_history()
-    history.append(entry)
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    HISTORY_FILE.write_text(json.dumps(history, ensure_ascii=False, indent=1))
+    write_text(HISTORY_FILE, json.dumps([*load_history(), entry][-MAX_HISTORY:], ensure_ascii=False, indent=1))
     return entry
 
 
@@ -208,7 +219,14 @@ def valid_profile(data):
     """檢查外部來的設定檔（檔案或網址）結構是否正確。"""
     return (isinstance(data, dict) and isinstance(data.get("name"), str) and data["name"].strip()
             and isinstance(data.get("settings"), dict) and all(isinstance(k, str) and isinstance(v, str) for k, v in data["settings"].items())
-            and isinstance(data.get("extensions", {}), dict) and all(isinstance(v, bool) for v in data.get("extensions", {}).values()))
+            and isinstance(data.get("extensions", {}), dict) and all(isinstance(v, bool) for v in data.get("extensions", {}).values())
+            and isinstance(data.get(EXTENSION_SETTINGS, False), bool))
+
+
+def imported_profile(data):
+    """外部來的設定檔只留下認得的欄位。"""
+    return {"name": data["name"].strip(), "created": data.get("created", 0), "settings": data["settings"],
+            "extensions": data.get("extensions", {}), EXTENSION_SETTINGS: data.get(EXTENSION_SETTINGS, False)}
 
 
 def profile_changes(profile, keys, extensions, names):
@@ -237,10 +255,13 @@ def _profile_path(name):
     return PROFILE_DIR / f"{safe}.json"
 
 
-def save_profile(profile):
+def save_profile(profile, replace=False):
+    """名稱（或它對應的檔名）已經有人用時丟出 ValueError，除非 replace。"""
     PROFILE_DIR.mkdir(parents=True, exist_ok=True)
     path = _profile_path(profile["name"])
-    path.write_text(json.dumps(profile, ensure_ascii=False, indent=1))
+    if not replace and path.exists():
+        raise ValueError(f"profile already exists: {profile['name']}")
+    write_text(path, json.dumps(profile, ensure_ascii=False, indent=1))
     return path
 
 
@@ -264,8 +285,6 @@ def delete_profile(name):
 
 def rename_profile(old, new):
     """以新名稱另存，再把舊檔移到垃圾桶。新名稱已存在時丟出 ValueError。"""
-    if _profile_path(new).exists():
-        raise ValueError(f"profile already exists: {new}")
     profile = next(p for p in load_profiles() if p["name"] == old)
     save_profile(dict(profile, name=new))
     delete_profile(old)

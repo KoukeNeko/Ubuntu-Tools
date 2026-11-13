@@ -12,6 +12,24 @@ import system  # noqa: E402
 
 
 class SystemTest(unittest.TestCase):
+    def test_write_text_replaces_the_file_and_follows_links(self):
+        folder = Path(tempfile.mkdtemp())
+        real, link = folder / "real.css", folder / "gtk.css"
+        real.write_text("old")
+        link.symlink_to(real)
+        system.write_text(link, "new")
+        self.assertEqual(real.read_text(), "new")
+        self.assertTrue(link.is_symlink())
+        self.assertEqual(sorted(p.name for p in folder.iterdir()), ["gtk.css", "real.css"])
+
+    def test_named_font_turns_axes_into_fields(self):
+        self.assertEqual(system.named_font("Ubuntu Sans 11 @wght=500"), "Ubuntu Sans weight=500 11")
+        self.assertEqual(system.named_font("Ubuntu Sans 11 @wght=450,wdth=90,opsz=12"),
+                         "Ubuntu Sans weight=450 Semi-Condensed 11 @opsz=12")
+        self.assertEqual(system.named_font("Ubuntu Sans 11 @wdth=100"), "Ubuntu Sans 11")
+        self.assertEqual(system.named_font("Ubuntu Sans Bold 11"), "Ubuntu Sans Bold 11")
+        self.assertEqual(system.named_font("Ubuntu Sans @wght=abc"), "Ubuntu Sans @wght=abc")
+
     def test_journal_usage(self):
         self.assertEqual(system.parse_journal_usage("Archived and active journals take up 24M in the file system."), 24 * 1024**2)
         self.assertEqual(system.parse_journal_usage("Archived and active journals take up 1.5G in the file system."), int(1.5 * 1024**3))
@@ -49,8 +67,9 @@ class SystemTest(unittest.TestCase):
         self.assertEqual(system.parse_upgradable("Listing...\n"), [])
 
     def test_protected_packages(self):
-        self.assertTrue(any(n.startswith(system.PROTECTED_PREFIXES) for n in ["foo", "gnome-shell-common"]))
-        self.assertFalse(any(n.startswith(system.PROTECTED_PREFIXES) for n in ["vlc", "libvlc5"]))
+        self.assertTrue(any(system.protected(n) for n in ["foo", "gnome-shell-common"]))
+        self.assertTrue(system.protected("apt") and system.protected("linux-image-6.8.0-45-generic"))
+        self.assertFalse(any(system.protected(n) for n in ["vlc", "libvlc5", "aptitude", "apt-file"]))
 
     def test_journal_merges_repeats(self):
         lines = "\n".join([

@@ -81,6 +81,41 @@ class StoreTest(unittest.TestCase):
         store.apply("profile", store.profile_changes(profile, keys, {}, {}))
         self.assertTrue(store.settings("org.test.dock").get_boolean("transparent"))
 
+    def test_failed_apply_still_records_what_it_wrote(self):
+        changes = [change("cursor-size", 48), store.extension_change("a@b", "A", False, True)]
+        with mock.patch.object(store, "shell_call", side_effect=store.GLib.Error("shell is busy")):
+            with self.assertRaises(store.GLib.Error):
+                store.apply("profile", changes)
+        self.assertEqual(self.get("cursor-size"), 48)
+        history = store.load_history()
+        self.assertEqual([c["key"] for c in history[0]["changes"]], ["cursor-size"])
+        store.undo(history[0]["id"])
+        self.assertIsNone(store.user_text(IF, "cursor-size"))
+
+    def test_history_keeps_only_the_latest(self):
+        with mock.patch.object(store, "MAX_HISTORY", 2):
+            for size in (32, 48, 64):
+                store.apply("tweak", [change("cursor-size", size)])
+        self.assertEqual([e["changes"][0]["new"] for e in store.load_history()], ["48", "64"])
+
+    def test_imported_profile_keeps_its_extension_settings(self):
+        profile = store.capture("搬家", [(IF, "cursor-size")], {})
+        profile[store.EXTENSION_SETTINGS] = True
+        exported = dict(profile, junk="ignored")
+        self.assertTrue(store.valid_profile(exported))
+        imported = store.imported_profile(exported)
+        self.assertTrue(imported[store.EXTENSION_SETTINGS])
+        self.assertNotIn("junk", imported)
+        self.assertFalse(store.valid_profile(dict(profile, extension_settings="yes")))
+
+    def test_saving_does_not_replace_a_profile_of_the_same_name(self):
+        store.save_profile(store.capture("a/b", [], {"mine@x": True}))
+        with self.assertRaises(ValueError):
+            store.save_profile(store.capture("a_b", [], {}))
+        self.assertEqual(store.load_profiles()[0]["extensions"], {"mine@x": True})
+        store.save_profile(store.capture("a/b", [], {}), replace=True)
+        self.assertEqual(store.load_profiles()[0]["extensions"], {})
+
     def test_profile_roundtrip(self):
         keys = [(IF, "cursor-size"), (IF, "clock-show-seconds")]
         store.apply("tweak", [change("cursor-size", 48)])

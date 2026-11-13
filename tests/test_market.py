@@ -60,6 +60,27 @@ class MarketTest(unittest.TestCase):
             market.safe_extract(archive, self.tmp / "out3")
         self.assertFalse((self.tmp.parent / "escaped.txt").exists())
 
+    def test_archive_that_extracts_too_large_rejected(self):
+        archive = self.tmp / "bomb.zip"
+        with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as z:
+            z.writestr("theme/big", b"0" * 5000)
+        tarball = self.tmp / "bomb.tar.xz"
+        make_tar(tarball, {"theme/big": b"0" * 5000})
+        with mock.patch.object(market, "MAX_EXTRACTED_BYTES", 1000):
+            for path in (archive, tarball):
+                with self.assertRaises(ValueError):
+                    market.safe_extract(path, self.tmp / "bomb-out")
+        self.assertFalse((self.tmp / "bomb-out" / "theme").exists())
+
+    def test_redirect_to_plain_http_rejected(self):
+        response = mock.MagicMock()
+        response.__enter__.return_value.url = "http://mirror.example/a.json"
+        with mock.patch.object(market.urllib.request, "urlopen", return_value=response):
+            with self.assertRaises(ValueError):
+                market.http_get("https://example.com/a.json", 10)
+            with self.assertRaises(ValueError):
+                market.download("https://example.com/a.tar.xz", self.tmp / "redirected")
+
     def test_not_an_archive(self):
         junk = self.tmp / "junk"
         junk.write_text("hello")

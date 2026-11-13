@@ -57,7 +57,7 @@ def save_conf(key, val):
     conf = load_conf()
     conf[key] = val
     CONF.parent.mkdir(parents=True, exist_ok=True)
-    CONF.write_text(json.dumps(conf))
+    system.write_text(CONF, json.dumps(conf))
 
 
 def read_pref():
@@ -133,7 +133,7 @@ DHRUVA_SOURCE = Path(__file__).resolve().parent / "extension" / DHRUVA_UUID
 DHRUVA_TARGET = store.EXTENSION_DIRS[0] / DHRUVA_UUID
 # 執行時用不到的內容不安裝。gschemas.compiled 也不複製：GNOME Shell 正讀著它，原地覆寫會讓 Shell 當掉，
 # 交給 glib-compile-schemas 重新產生（先寫暫存檔再改名）。
-DHRUVA_SKIP = (".git", "media", "docs", "tests", "manage.sh", "gschemas.compiled")
+DHRUVA_SKIP = (".git", ".gitignore", "media", "docs", "tests", "manage.sh", "gschemas.compiled")
 # Tuneup 自己的頂部列擴充功能，隨套件裝到系統的擴充功能資料夾
 PANEL_UUID = "tuneup-panel@koukeneko.github.io"
 PANEL = "org.gnome.shell.extensions.tuneup-panel"
@@ -211,8 +211,8 @@ def in_background(work, done):
     def run():
         try:
             result, err = work(), None
-        except (OSError, ValueError) as e:
-            result, err = None, str(e)
+        except Exception as e:  # 執行緒的最外層：任何錯誤都要回報給畫面，否則它會一直等下去
+            result, err = None, str(e) or type(e).__name__
         GLib.idle_add(lambda: done(result, err) and False)
     threading.Thread(target=run, daemon=True).start()
 
@@ -499,7 +499,6 @@ def all_items():
 
 
 ALL_KEYS = list(dict.fromkeys((item[2], item[3]) for item in all_items()))
-PROFILE_EXTENSION_SETTINGS = "extension_settings"  # 設定檔裡的標記：這份也記錄了擴充功能自己的設定
 KEY_TITLES = {}
 for _item in all_items():
     KEY_TITLES.setdefault((_item[2], _item[3]), _item[1])
@@ -1466,7 +1465,17 @@ class Tuneup(Adw.Application):
                 if p.is_file() and not set(p.relative_to(DHRUVA_SOURCE).parts) & set(DHRUVA_SKIP)]
 
     def dhruva_outdated(self, files):
-        return any(not (DHRUVA_TARGET / f).is_file() or (DHRUVA_TARGET / f).read_bytes() != (DHRUVA_SOURCE / f).read_bytes() for f in files)
+        """隨程式發佈的這份比已安裝的新。已安裝的檔案有改過而且比較新時，那是自己另外裝的版本，不要蓋回去。"""
+        outdated = False
+        for f in files:
+            bundled, installed = DHRUVA_SOURCE / f, DHRUVA_TARGET / f
+            if not installed.is_file():
+                outdated = True
+            elif installed.read_bytes() != bundled.read_bytes():
+                if installed.stat().st_mtime > bundled.stat().st_mtime:
+                    return False
+                outdated = True
+        return outdated
 
     def install_dhruva(self):
         try:
@@ -2432,17 +2441,22 @@ class Tuneup(Adw.Application):
 
     def profile_keys(self, profile=None):
         """設定檔涵蓋的設定。較早建立的設定檔沒有記錄擴充功能的設定，套用時不能把它們當成「要還原為預設值」。"""
-        if profile is not None and not profile.get(PROFILE_EXTENSION_SETTINGS):
+        if profile is not None and not profile.get(store.EXTENSION_SETTINGS):
             return ALL_KEYS
-        return list(dict.fromkeys(ALL_KEYS + store.extension_keys()))
+        if self._profile_keys is None:  # 每份設定檔都會問一次，掃描擴充功能的資料夾只做一遍
+            self._profile_keys = list(dict.fromkeys(ALL_KEYS + store.extension_keys()))
+        return self._profile_keys
 
     def find_profile(self, name):
         return next((pf for pf in self.profiles if pf["name"] == name), None)
 
-    def create_profile(self, name):
+    def create_profile(self, name, replace=False):
         profile = store.capture(name, self.profile_keys(), self.ext_states())
-        profile[PROFILE_EXTENSION_SETTINGS] = True
-        store.save_profile(profile)
+        profile[store.EXTENSION_SETTINGS] = True
+        try:
+            store.save_profile(profile, replace)
+        except ValueError:
+            return self.toast_raw(_("已經有設定檔「{name}」").format(name=name))
         self.reload("pf")
         self.toast_raw(_("已儲存設定檔「{name}」").format(name=name))
 
@@ -2489,7 +2503,10 @@ class Tuneup(Adw.Application):
         if err or not store.valid_profile(data):
             self.toast_raw(_("無法匯入：{error}").format(error=err or _("不是有效的 Tuneup 設定檔")))
             return
-        store.save_profile({"name": data["name"].strip(), "created": data.get("created", 0), "settings": data["settings"], "extensions": data.get("extensions", {})})
+        try:
+            store.save_profile(store.imported_profile(data))
+        except ValueError:
+            return self.toast_raw(_("已經有設定檔「{name}」").format(name=data["name"].strip()))
         self.reload("pf")
         self.toast_raw(_("已匯入設定檔「{name}」，尚未套用").format(name=data["name"].strip()))
 
@@ -2712,7 +2729,7 @@ class Tuneup(Adw.Application):
             a.connect("activate", lambda _a, _p, cb=cb: cb())
             self.add_action(a)
         with_name = {
-            "pf-update": lambda name: self.create_profile(name), "pf-export": self.export_profile, "pf-rename": self.rename_profile,
+            "pf-update": lambda name: self.create_profile(name, replace=True), "pf-export": self.export_profile, "pf-rename": self.rename_profile,
             "pf-delete": self.delete_profile, "restore-to": self.restore_entry,
             "theme-apply": lambda target: self.apply_theme(*target.split(":", 1)),
         }
@@ -2747,6 +2764,7 @@ class Tuneup(Adw.Application):
     def build_ui(self, page="dash"):
         """讀取系統目前的狀態並建立整個畫面；套用變更、重新整理與切換語言都走這裡。"""
         store.forget_absent()  # 擴充功能可能剛裝好，它的設定要重新找
+        self._profile_keys = None
         self.sub_navs = {}   # 頁面 id -> 該頁的 Adw.NavigationView
         self.stale = set()   # 內容已變動、等使用者回到主畫面再更新的頁面
         self.key_rows = {}

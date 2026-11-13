@@ -29,6 +29,14 @@ def run_root(cmd, timeout=900):
     return run(["pkexec", *cmd], timeout)
 
 
+def write_text(path, text):
+    """先寫到旁邊的暫存檔再換過去：寫到一半中斷時，原本的檔案還在。"""
+    path = Path(os.path.realpath(path))  # 檔案是連結時改的是它指向的那一個
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text)
+    os.replace(tmp, path)
+
+
 def human(size):
     for unit in ("B", "KB", "MB", "GB", "TB"):
         if size < 1024 or unit == "TB":
@@ -148,9 +156,14 @@ def root_usage():
 SNAP_DIR = Path("/var/lib/snapd/snaps")
 SNAP_DESKTOP_DIR = Path("/var/lib/snapd/desktop/applications")
 SNAP_SYSTEM_NOTES = ("base", "snapd", "core", "gadget", "kernel")
-# 移除這些套件會讓系統無法開機或登入；模擬結果只要碰到就拒絕
-PROTECTED_PREFIXES = ("ubuntu-desktop", "ubuntu-minimal", "ubuntu-standard", "gnome-shell", "gdm3", "systemd", "linux-image",
-                      "linux-generic", "grub", "sudo", "apt", "dpkg", "libc6", "network-manager", "python3-minimal", "snapd")
+# 移除這些套件會讓系統無法開機或登入；模擬結果只要碰到就拒絕。
+# 整組都不能動的用開頭比對；名稱短的只比對完全相同，否則 apt 會連 aptitude、apt-file 一起擋下。
+PROTECTED_PREFIXES = ("ubuntu-desktop", "ubuntu-minimal", "ubuntu-standard", "gnome-shell", "systemd", "linux-image", "linux-generic", "grub")
+PROTECTED_NAMES = ("gdm3", "sudo", "apt", "dpkg", "libc6", "network-manager", "python3-minimal", "snapd")
+
+
+def protected(name):
+    return name in PROTECTED_NAMES or name.startswith(PROTECTED_PREFIXES)
 
 
 def parse_snap_list(text):
@@ -198,7 +211,7 @@ def apt_manual():
 def removal_plan(package):
     """模擬移除，回傳 (會被移除的套件, 是否碰到系統必要套件)。"""
     removed = parse_autoremove(run(["apt-get", "-s", "remove", package])[1])
-    return removed, any(name.startswith(PROTECTED_PREFIXES) for name in removed)
+    return removed, any(protected(name) for name in removed)
 
 
 # ---------- 系統更新 ----------
@@ -458,19 +471,6 @@ def last_file_backup():
 # 遇到不認得的結構就停在那一層畫底色，那個程式看起來和原本一樣。
 
 GTK4_CSS = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "gtk-4.0" / "gtk.css"
-SIDEBAR_CSS_BEGIN = "/* tuneup: sidebar blur */"
-SIDEBAR_CSS_END = "/* tuneup: end */"
-# 桌面圖示（DING）是一個蓋滿螢幕、刻意幾乎透明的視窗；替它補上底色會把桌布整個蓋住
-SIDEBAR_WINDOW = "window.background:not(.desktopwindow)"
-SIDEBAR_HOST = f"{SIDEBAR_WINDOW} > dialog-host > widget > widget"   # libadwaita 放視窗內容的位置
-SIDEBAR_WRAPPERS = ("toastoverlay", "widget", "taboverview > widget")  # 只是包住內容的外框
-SIDEBAR_DEPTH = 3   # 「檔案」的分割檢視在三層外框之內
-SIDEBAR_OPACITY = 82   # 很霧：只隱約透出後方的顏色
-
-
-def sidebar_rules():
-    bg = "background-color: var(--window-bg-color);"
-    rules = [f"{SIDEBAR_WINDOW} {{ background: none; }}",
 # Pango 的寬度名稱與對應的 wdth 軸數值；100 是正常寬度，不需要寫出來
 FONT_WIDTHS = {50: "Ultra-Condensed", 62.5: "Extra-Condensed", 75: "Condensed", 87.5: "Semi-Condensed", 100: "",
                112.5: "Semi-Expanded", 125: "Expanded", 150: "Extra-Expanded", 200: "Ultra-Expanded"}
@@ -501,6 +501,19 @@ def named_font(text):
     return " ".join(filter(None, [family, *words])) + size + (" @" + ",".join(kept) if kept else "")
 
 
+SIDEBAR_CSS_BEGIN = "/* tuneup: sidebar blur */"
+SIDEBAR_CSS_END = "/* tuneup: end */"
+# 桌面圖示（DING）是一個蓋滿螢幕、刻意幾乎透明的視窗；替它補上底色會把桌布整個蓋住
+SIDEBAR_WINDOW = "window.background:not(.desktopwindow)"
+SIDEBAR_HOST = f"{SIDEBAR_WINDOW} > dialog-host > widget > widget"   # libadwaita 放視窗內容的位置
+SIDEBAR_WRAPPERS = ("toastoverlay", "widget", "taboverview > widget")  # 只是包住內容的外框
+SIDEBAR_DEPTH = 3   # 「檔案」的分割檢視在三層外框之內
+SIDEBAR_OPACITY = 82   # 很霧：只隱約透出後方的顏色
+
+
+def sidebar_rules():
+    bg = "background-color: var(--window-bg-color);"
+    rules = [f"{SIDEBAR_WINDOW} {{ background: none; }}",
              f"{SIDEBAR_WINDOW} > *:not(dialog-host):not(.titlebar) {{ {bg} }}"]
     for depth in range(SIDEBAR_DEPTH + 1):
         for path in itertools.product(SIDEBAR_WRAPPERS, repeat=depth):
@@ -542,4 +555,4 @@ def set_sidebar_css(on):
     except FileNotFoundError:
         text = ""
     GTK4_CSS.parent.mkdir(parents=True, exist_ok=True)
-    GTK4_CSS.write_text(with_sidebar_css(text, on))
+    write_text(GTK4_CSS, with_sidebar_css(text, on))

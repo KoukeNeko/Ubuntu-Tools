@@ -23,6 +23,7 @@ OCS = "https://api.opendesktop.org/ocs/v1/content/data"
 MAX_JSON_BYTES = 2_000_000
 MAX_IMAGE_BYTES = 4_000_000
 MAX_ARCHIVE_BYTES = 400_000_000
+MAX_EXTRACTED_BYTES = 2_000_000_000  # 很小的壓縮檔也能解出塞滿磁碟的內容
 PAGE_SIZE = 15
 MAX_PREVIEWS = 8  # 詳細頁最多載入幾張預覽圖
 
@@ -50,10 +51,17 @@ def http_get(url, limit):
         raise ValueError("only https:// URLs are allowed")
     req = urllib.request.Request(url, headers={"User-Agent": "Tuneup"})
     with urllib.request.urlopen(req, timeout=15) as r:
+        require_https(r)
         body = r.read(limit + 1)
     if len(body) > limit:
         raise ValueError("response too large")
     return body
+
+
+def require_https(response):
+    """伺服器可以把 https 的請求轉到 http；轉過去之後就不是加密連線了。"""
+    if not response.url.startswith("https://"):
+        raise ValueError("redirected away from https")
 
 
 def fetch_json(url, limit=MAX_JSON_BYTES):
@@ -179,6 +187,7 @@ def download(url, dest, md5=""):
     total = 0
     req = urllib.request.Request(url, headers={"User-Agent": "Tuneup"})
     with urllib.request.urlopen(req, timeout=30) as r, open(dest, "wb") as out:
+        require_https(r)
         while chunk := r.read(1 << 16):
             total += len(chunk)
             if total > MAX_ARCHIVE_BYTES:
@@ -187,6 +196,11 @@ def download(url, dest, md5=""):
             out.write(chunk)
     if md5 and digest.hexdigest() != md5.lower():
         raise ValueError("checksum mismatch")
+
+
+def check_extracted_size(sizes):
+    if sum(sizes) > MAX_EXTRACTED_BYTES:
+        raise ValueError("archive is too large when extracted")
 
 
 def safe_extract(archive, dest):
@@ -200,9 +214,11 @@ def safe_extract(archive, dest):
                     raise ValueError(f"unsafe path in archive: {info.filename}")
                 if (info.external_attr >> 16) & 0o170000 == 0o120000:
                     raise ValueError(f"symlink in zip archive: {info.filename}")
+            check_extracted_size(info.file_size for info in z.infolist())
             z.extractall(dest)
     elif tarfile.is_tarfile(archive):
         with tarfile.open(archive) as t:
+            check_extracted_size(member.size for member in t.getmembers())
             try:
                 t.extractall(dest, filter="data")  # 拒絕絕對路徑、..、指向外部的連結與裝置檔
             except tarfile.FilterError as err:

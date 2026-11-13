@@ -30,7 +30,7 @@ install -m 644 i18n/*.json "$app/i18n/"
 dhruva=extension/dhruva@narkagni
 [ -f "$dhruva/metadata.json" ] || { echo "Dhruva is missing: run git submodule update --init" >&2; exit 1; }
 mkdir -p "$app/$dhruva"
-tar -C "$dhruva" --exclude=.git --exclude=media --exclude=docs --exclude=tests --exclude=manage.sh -cf - . | tar -C "$app/$dhruva" -xf -
+tar -C "$dhruva" --exclude=.git --exclude=media --exclude=docs --exclude=tests --exclude=manage.sh --exclude=.gitignore --exclude=gschemas.compiled -cf - . | tar -C "$app/$dhruva" -xf -
 # Tuneup's own top bar extension is installed for every user, so a new
 # package brings a new version of it without Tuneup copying anything.
 panel=extension/tuneup-panel@koukeneko.github.io
