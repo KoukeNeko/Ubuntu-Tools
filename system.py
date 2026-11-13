@@ -471,6 +471,36 @@ SIDEBAR_OPACITY = 82   # 很霧：只隱約透出後方的顏色
 def sidebar_rules():
     bg = "background-color: var(--window-bg-color);"
     rules = [f"{SIDEBAR_WINDOW} {{ background: none; }}",
+# Pango 的寬度名稱與對應的 wdth 軸數值；100 是正常寬度，不需要寫出來
+FONT_WIDTHS = {50: "Ultra-Condensed", 62.5: "Extra-Condensed", 75: "Condensed", 87.5: "Semi-Condensed", 100: "",
+               112.5: "Semi-Expanded", 125: "Expanded", 150: "Extra-Expanded", 200: "Ultra-Expanded"}
+
+
+def named_font(text):
+    """把字型描述裡的粗細與寬度從軸的寫法改成欄位：'Ubuntu Sans 11 @wght=500' → 'Ubuntu Sans weight=500 11'。
+
+    GTK 的字型對話框選了可變字型的粗細後交回軸的寫法，但再打開時只看欄位，於是每次都回到 Regular。
+    """
+    name, found, variations = text.partition(" @")
+    if not found:
+        return text
+    family, size = re.fullmatch(r"(.*?)((?: [\d.]+(?:px)?)?)", name).groups()
+    words, kept = [], []
+    for part in variations.split(","):
+        axis, _, number = part.partition("=")
+        try:
+            if axis == "wght":
+                words.append(f"weight={round(float(number))}")
+            elif axis == "wdth":
+                words.append(FONT_WIDTHS[min(FONT_WIDTHS, key=lambda width: abs(width - float(number)))])
+            else:
+                kept.append(part)
+        except ValueError:
+            kept.append(part)  # 看不懂的數值原樣留著
+    # shortcut: 名稱裡已經有 Bold 這類字樣時 Pango 以它為準；對話框交回的描述不會兩者並存，遇到再處理
+    return " ".join(filter(None, [family, *words])) + size + (" @" + ",".join(kept) if kept else "")
+
+
              f"{SIDEBAR_WINDOW} > *:not(dialog-host):not(.titlebar) {{ {bg} }}"]
     for depth in range(SIDEBAR_DEPTH + 1):
         for path in itertools.product(SIDEBAR_WRAPPERS, repeat=depth):

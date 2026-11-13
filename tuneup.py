@@ -1394,12 +1394,15 @@ class Tuneup(Adw.Application):
                     buttons[val].set_active(True)
         elif kind == "font":
             w = Adw.ActionRow(title=_m(title), subtitle=sub)
-            fb = Gtk.FontDialogButton(dialog=Gtk.FontDialog(), valign=Gtk.Align.CENTER, font_desc=Pango.FontDescription.from_string(v))
-            fb.connect("notify::font-desc", lambda b, _p: self.stage(schema, key, b.get_font_desc().to_string()))
+            def described(text):
+                return Pango.FontDescription.from_string(system.named_font(text))
+
+            fb = Gtk.FontDialogButton(dialog=Gtk.FontDialog(), valign=Gtk.Align.CENTER, font_desc=described(v))
+            fb.connect("notify::font-desc", lambda b, _p: self.stage(schema, key, described(b.get_font_desc().to_string()).to_string()))
             w.add_suffix(fb)
 
             def show(val):
-                fb.set_font_desc(Pango.FontDescription.from_string(val))
+                fb.set_font_desc(described(val))
         else:  # image：選擇圖片檔，值是 file:// 網址
             w = Adw.ActionRow(title=_m(title), subtitle=sub)
             name = value(os.path.basename(urllib.parse.unquote(v)))
