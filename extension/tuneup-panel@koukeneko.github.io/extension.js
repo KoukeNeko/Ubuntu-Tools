@@ -1,11 +1,13 @@
 // Top bar manager: hide items, reorder them within their box, and give the
 // items of a box the same padding, with overrides for single items. Menus
-// opened from the bar appear and go at once, as a menu bar's do.
+// opened from the bar appear and go at once, as a menu bar's do. Holding
+// Ctrl, an item can be dragged to another place in its box.
 //
 // Items go by their status area role. App indicators get theirs from a D-Bus
 // name that changes every session, so they go by the id the app reports.
 // The items found are written back to the settings for Tuneup to list.
 
+import Clutter from 'gi://Clutter';
 import GLib from 'gi://GLib';
 
 import * as BoxPointer from 'resource:///org/gnome/shell/ui/boxpointer.js';
@@ -39,10 +41,14 @@ export default class PanelManager extends Extension {
                     original.call(this, fromBar ? BoxPointer.PopupAnimation.NONE : animate, onComplete);
                 });
         }
+        this._drag = null;
+        Main.panel.connectObject('captured-event', (_panel, event) => this._onPanelEvent(event), this);
         this._sync();
     }
 
     disable() {
+        this._endDrag();
+        Main.panel.disconnectObject(this);
         this._injections.clear();
         this._injections = null;
         if (this._syncId)
@@ -112,6 +118,51 @@ export default class PanelManager extends Extension {
                     parent.set_child_at_index(child, i);
             });
         }
+    }
+
+    _onPanelEvent(event) {
+        const type = event.type();
+        if (!this._drag) {
+            if (type !== Clutter.EventType.BUTTON_PRESS || event.get_button() !== Clutter.BUTTON_PRIMARY ||
+                !(event.get_state() & Clutter.ModifierType.CONTROL_MASK))
+                return Clutter.EVENT_PROPAGATE;
+            const boxes = BOXES.map(([, name]) => Main.panel[name]);
+            let container = global.stage.get_event_actor(event);
+            while (container && !boxes.includes(container.get_parent()))
+                container = container.get_parent();
+            if (!container)
+                return Clutter.EVENT_PROPAGATE;
+            this._drag = {container, grab: global.stage.grab(Main.panel), opacity: container.opacity};
+            container.opacity = 128;
+            return Clutter.EVENT_STOP;
+        }
+        if (type === Clutter.EventType.MOTION) {
+            const {container} = this._drag;
+            const parent = container.get_parent();
+            // The item went away under the pointer, such as an app indicator quitting.
+            if (!parent) {
+                this._endDrag();
+                return Clutter.EVENT_STOP;
+            }
+            const [, x] = parent.transform_stage_point(...event.get_coords());
+            const others = parent.get_children().filter(child => child !== container);
+            const at = others.findIndex(child => child.visible && child.x + child.width / 2 > x);
+            const index = at < 0 ? others.length : at;
+            if (parent.get_child_at_index(index) !== container)
+                parent.set_child_at_index(container, index);
+        } else if (type === Clutter.EventType.BUTTON_RELEASE) {
+            this._endDrag();
+            this._settings.set_strv('order', this._items().map(i => i.id));
+        }
+        return Clutter.EVENT_STOP;
+    }
+
+    _endDrag() {
+        if (!this._drag)
+            return;
+        this._drag.grab.dismiss();
+        this._drag.container.opacity = this._drag.opacity;
+        this._drag = null;
     }
 
     _applyHidden(items) {
