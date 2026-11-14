@@ -11,7 +11,8 @@ curl -fsSL https://raw.githubusercontent.com/KoukeNeko/Ubuntu-Tools/main/install
 ```
 
 This installs the `.deb` from the latest release and asks for your password
-for `apt`. Log out and back in afterwards.
+for `apt`, on the terminal or, without one, in a desktop dialog. Log out and
+back in afterwards.
 
 ## Run
 

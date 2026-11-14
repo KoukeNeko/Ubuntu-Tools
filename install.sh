@@ -18,5 +18,11 @@ echo "Downloading $url"
 curl -fL --progress-bar -o "$deb" "$url"
 chmod 644 "$deb"
 
-sudo apt install -y "$deb"
+# sudo can only ask for the password on a terminal; elsewhere, such as a
+# launcher, pkexec asks in a desktop dialog.
+if (: </dev/tty) 2>/dev/null; then
+    sudo apt install -y "$deb"
+else
+    pkexec apt install -y "$deb"
+fi
 echo "Installed. Log out and back in to load the top bar and Dock extensions."
