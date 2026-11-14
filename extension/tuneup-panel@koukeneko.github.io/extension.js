@@ -1,5 +1,6 @@
 // Top bar manager: hide items, reorder them within their box, and give the
-// items of a box the same padding, with overrides for single items.
+// items of a box the same padding, with overrides for single items. Menus
+// opened from the bar appear and go at once, as a menu bar's do.
 //
 // Items go by their status area role. App indicators get theirs from a D-Bus
 // name that changes every session, so they go by the id the app reports.
@@ -7,8 +8,9 @@
 
 import GLib from 'gi://GLib';
 
+import * as BoxPointer from 'resource:///org/gnome/shell/ui/boxpointer.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
-import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
+import {Extension, InjectionManager} from 'resource:///org/gnome/shell/extensions/extension.js';
 
 const BOXES = [['left', '_leftBox'], ['center', '_centerBox'], ['right', '_rightBox']];
 const APP_INDICATOR_ROLE = 'appindicator-';
@@ -29,10 +31,20 @@ export default class PanelManager extends Extension {
                 'child-removed', () => this._queueSync(),
                 this);
         }
+        this._injections = new InjectionManager();
+        for (const method of ['open', 'close']) {
+            this._injections.overrideMethod(BoxPointer.BoxPointer.prototype, method, original =>
+                function (animate, onComplete) {
+                    const fromBar = this._sourceActor && Main.panel.contains(this._sourceActor);
+                    original.call(this, fromBar ? BoxPointer.PopupAnimation.NONE : animate, onComplete);
+                });
+        }
         this._sync();
     }
 
     disable() {
+        this._injections.clear();
+        this._injections = null;
         if (this._syncId)
             GLib.source_remove(this._syncId);
         this._syncId = 0;
