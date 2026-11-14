@@ -118,7 +118,7 @@ row.two-line box.header{min-height:64px}
 
 # ---------- 系統資料 ----------
 EXT_STATE_ACTIVE, EXT_STATE_ERROR, EXT_STATE_OUT_OF_DATE = 1, 3, 4  # 取自 GNOME Shell 的 ExtensionState
-VERSION = "0.1.0"
+VERSION = "0.1.1"
 AUTOSTART_DIR = Path(GLib.get_user_config_dir()) / "autostart"
 APP_ID = "io.github.doeshing.Tuneup"
 LAUNCHER = Path(GLib.get_user_data_dir()) / "applications" / f"{APP_ID}.desktop"
