@@ -4,6 +4,15 @@ Tweaks, extensions and system tools for Ubuntu, in one application styled
 like GNOME Settings. Every change it makes to settings is recorded and can be
 undone.
 
+## Install
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/KoukeNeko/Ubuntu-Tools/main/install.sh | sh
+```
+
+This installs the `.deb` from the latest release and asks for your password
+for `apt`. Log out and back in afterwards.
+
 ## Run
 
 ```sh
