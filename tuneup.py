@@ -533,6 +533,12 @@ def tile(text, i):
     return lb
 
 
+def app_image(info):
+    """應用程式自己的圖示，大小與 tile 相同；沒有圖示時回傳 None。"""
+    icon = info.get_icon() if info else None
+    return Gtk.Image(gicon=icon, pixel_size=32) if icon else None
+
+
 def chip(text, kind="neutral"):
     """狀態膠囊（一列最多一個）。"""
     lb = Gtk.Label(label=_(text))
@@ -1641,8 +1647,10 @@ class Tuneup(Adw.Application):
 
         ex = Adw.ExpanderRow(title=_m("不模糊的應用程式"))
         ex.add_suffix(btn("新增", on_click=lambda: self.choose_app(lambda info: wm_class_of(info) in excluded, exclude)))
+        by_class = {wm_class_of(a): a for a in Gio.AppInfo.get_all() if isinstance(a, Gio.DesktopAppInfo)}
         for wm_class in excluded:
-            ex.add_row(row(wm_class, suffix=[btn(None, "flat", icon="user-trash-symbolic", on_click=lambda wm_class=wm_class: include(wm_class))], data=True))
+            info = by_class.get(wm_class)
+            ex.add_row(row(info.get_name() if info else wm_class, wm_class if info else None, app_image(info), suffix=[btn(None, "flat", icon="user-trash-symbolic", on_click=lambda wm_class=wm_class: include(wm_class))], data=True))
         g.add(ex)
         return g
 
@@ -2129,7 +2137,7 @@ class Tuneup(Adw.Application):
         if AUTOSTART_DIR.is_dir():
             for path in sorted(AUTOSTART_DIR.glob("*.desktop")):
                 info = Gio.DesktopAppInfo.new_from_filename(str(path))
-                entries.append((path, info.get_name() if info else path.stem, (info.get_commandline() or "") if info else ""))
+                entries.append((path, info.get_name() if info else path.stem, (info.get_commandline() or "") if info else "", info))
         return entries
 
     def add_autostart(self, info, dialog):
@@ -2144,7 +2152,7 @@ class Tuneup(Adw.Application):
         self.toast_raw(message)
 
     def choose_autostart(self):
-        existing = {path.name for path, _n, _c in self.autostart_entries()}
+        existing = {path.name for path, _n, _c, _i in self.autostart_entries()}
         self.choose_app(lambda info: os.path.basename(info.get_filename()) in existing, self.add_autostart)
 
     def choose_app(self, skip, on_pick):
@@ -2188,8 +2196,10 @@ class Tuneup(Adw.Application):
         p.add(g)
         g = group("登入時啟動")
         entries = self.autostart_entries()
-        for i, (path, name, command) in enumerate(entries):
-            g.add(row(name, command or path.name, tile(name, i), [btn("移除", on_click=lambda path=path, name=name: self.remove_autostart(path, name))], data=True))
+        # 啟動項目常不寫圖示；同名的已安裝應用程式有的話用它的
+        installed = {a.get_id(): a for a in Gio.AppInfo.get_all()}
+        for i, (path, name, command, info) in enumerate(entries):
+            g.add(row(name, command or path.name, app_image(info) or app_image(installed.get(path.name)) or tile(name, i), [btn("移除", on_click=lambda path=path, name=name: self.remove_autostart(path, name))], data=True))
         if not entries:
             g.add(row("沒有啟動應用程式", "這裡只列出你自己加入的項目，不含系統預設的"))
         p.add(g)
@@ -2406,21 +2416,30 @@ class Tuneup(Adw.Application):
             snaps = [s for s in found["snaps"] if not s["system"]]
             packages = sorted(found["apt"], key=lambda pkg: -pkg["size"])
             total.set_label(_("{a} 個 Snap · {b} 個 apt 套件").format(a=len(snaps), b=len(packages)))
+            # 套件 -> 它提供的第一個應用程式；指令列工具與函式庫沒有，維持字母圖示
+            package_app = {}
+            for path, names in found["owners"].items():
+                for name in names:
+                    package_app.setdefault(name, apps[path])
             for i, s in enumerate(sorted(snaps, key=lambda s: -s["size"])):
                 b = btn("移除", on_click=lambda s=s: self.run_system(
                     _("移除 {name}？").format(name=s["name"]), _("Snap 會保留一份資料快照 31 天，之後自動刪除。"), "移除",
                     lambda: system.run(["snap", "remove", s["name"]], timeout=600), "apps", "已移除"))
-                snap_group.add(row(s["name"], f"{s['version']} · {s['publisher']}", tile(s["name"], i), [value(system.human(s["size"])), b], data=True))
+                info = Gio.DesktopAppInfo.new_from_filename(s["desktop"]) if s["desktop"] else None
+                snap_group.add(row(s["name"], f"{s['version']} · {s['publisher']}", app_image(info) or tile(s["name"], i),
+                                   [value(system.human(s["size"])), b], data=True))
             if not snaps:
                 snap_group.add(row("沒有 Snap 應用程式", "執行環境、主題這類共用元件不列出"))
             for i, pkg in enumerate(packages):
                 b = btn("移除", on_click=lambda pkg=pkg: self.remove_apt(pkg["name"]))
-                apt_group.add(row(pkg["name"], pkg["summary"] or pkg["version"], tile(pkg["name"], i), [value(system.human(pkg["size"])), b], data=True))
+                apt_group.add(row(pkg["name"], pkg["summary"] or pkg["version"], app_image(package_app.get(pkg["name"])) or tile(pkg["name"], i),
+                                  [value(system.human(pkg["size"])), b], data=True))
             if not packages:
                 apt_group.add(row("沒有手動安裝的 apt 套件", "apt-mark showmanual 沒有回報任何套件"))
             self.page_words["apps"] = [s["name"].lower() for s in snaps] + [pkg["name"].lower() for pkg in packages]
             self.mark_rows(view)
-        in_background(lambda: {"snaps": system.snaps(), "apt": system.apt_manual()}, fill)
+        apps = {a.get_filename(): a for a in Gio.AppInfo.get_all() if a.get_filename()}
+        in_background(lambda: {"snaps": system.snaps(), "apt": system.apt_manual(), "owners": system.owners(list(apps))}, fill)
         view = self.tabbed("apps", p)
         nav.add(Adw.NavigationPage(title=_("應用程式"), child=view))
         self.watch_nav("apps", nav)

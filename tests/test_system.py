@@ -61,6 +61,15 @@ class SystemTest(unittest.TestCase):
         pkgs = system.parse_dpkg("bash\t2020\t5.3-3ubuntu1\tGNU Bourne Again SHell\nbroken line\n")
         self.assertEqual(pkgs, [{"name": "bash", "size": 2020 * 1024, "version": "5.3-3ubuntu1", "summary": "GNU Bourne Again SHell"}])
 
+    def test_desktop_owners(self):
+        text = ("nautilus: /usr/share/applications/org.gnome.Nautilus.desktop\n"
+                "libreoffice-common, libreoffice-writer:amd64: /usr/share/applications/writer.desktop\n"
+                "diversion by foo from: /usr/share/applications/x.desktop\n"
+                "dpkg-query: no path found matching pattern /usr/share/applications/nope.desktop\n")
+        self.assertEqual(system.parse_owners(text), {
+            "/usr/share/applications/org.gnome.Nautilus.desktop": ["nautilus"],
+            "/usr/share/applications/writer.desktop": ["libreoffice-common", "libreoffice-writer"]})
+
     def test_upgradable(self):
         text = "Listing...\ngdm3/stonking-updates 51.0-0ubuntu1.1 amd64 [upgradable from: 51.0-0ubuntu1]\n"
         self.assertEqual(system.parse_upgradable(text), [{"name": "gdm3", "new": "51.0-0ubuntu1.1", "old": "51.0-0ubuntu1"}])

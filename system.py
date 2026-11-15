@@ -178,10 +178,13 @@ def parse_snap_list(text):
 
 
 def snaps():
+    """每個 Snap 另外帶 desktop：它的第一個桌面啟動項目，沒有時是 None。"""
     found = parse_snap_list(run(["snap", "list"])[1])
     for s in found:
+        desktop = sorted(SNAP_DESKTOP_DIR.glob(f"{s['name']}_*.desktop"))
+        s["desktop"] = str(desktop[0]) if desktop else None
         # 沒有桌面啟動項目的是執行環境或主題這類共用元件，移除會弄壞其他 Snap
-        if not any(SNAP_DESKTOP_DIR.glob(f"{s['name']}_*.desktop")):
+        if not desktop:
             s["system"] = True
         try:
             s["size"] = (SNAP_DIR / f"{s['name']}_{s['rev']}.snap").stat().st_size
@@ -206,6 +209,25 @@ def apt_manual():
     if not names:
         return []
     return parse_dpkg(run(["dpkg-query", "-W", "-f=${Package}\t${Installed-Size}\t${Version}\t${binary:Summary}\n", *names])[1])
+
+
+PACKAGE_NAME = re.compile(r"[a-z0-9][a-z0-9+.-]*(?::\S+)?")
+
+
+def parse_owners(text):
+    """dpkg-query -S 的輸出 -> {路徑: [套件]}；找不到與 diversion 的行略過，套件名稱去掉架構。"""
+    owners = {}
+    for line in text.splitlines():
+        names, sep, path = line.partition(": ")
+        packages = names.split(", ")
+        if sep and path.startswith("/") and all(PACKAGE_NAME.fullmatch(p) for p in packages):
+            owners[path] = [p.split(":")[0] for p in packages]
+    return owners
+
+
+def owners(paths):
+    """這些檔案各屬於哪些 apt 套件；不屬於任何套件的不列出。"""
+    return parse_owners(run(["dpkg-query", "-S", *paths])[1]) if paths else {}
 
 
 def removal_plan(package):
