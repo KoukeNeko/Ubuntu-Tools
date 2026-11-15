@@ -100,6 +100,59 @@ def clean(item_id):
     return run_root(commands[item_id])
 
 
+# ---------- Mole ----------
+# 有裝 Mole（https://github.com/tw93/Mole）時，使用者層的快取交給它：它認得各種應用程式與開發工具的快取，
+# 程式還在執行時會略過。需要管理員權限的步驟它在沒有終端機時不做，那些仍由上面的項目處理。
+MOLE_SECTION, MOLE_CLEAN, MOLE_REVIEW = "\u27a4 ", "\u25cb", "\u2299"   # ➤ ○ ⊙
+MOLE_POTENTIAL = "Potential space: "
+
+
+def mole_path():
+    """Mole 的指令；從應用程式選單啟動時 PATH 常不含 ~/.local/bin，所以也直接找那裡。"""
+    local = Path.home() / ".local" / "bin" / "mole"
+    return shutil.which("mole") or (str(local) if local.is_file() else None)
+
+
+def mole_run(args, timeout):
+    """執行 Mole，回傳 (結束碼, 輸出)。沒有終端機時它不會停下來問，輸出也不帶顏色。"""
+    try:
+        p = subprocess.run([mole_path(), *args], capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL,
+                           cwd=Path.home(), env={**os.environ, "NO_COLOR": "1", "TERM": "dumb", "LC_ALL": "C.UTF-8"})
+    except (OSError, subprocess.TimeoutExpired):
+        return -1, ""
+    return p.returncode, p.stdout + p.stderr
+
+
+def parse_mole_report(text):
+    """mo clean --dry-run 的輸出 -> ([{"title", "items": [{"label", "detail", "review"}]}], 可釋放空間的文字)。
+
+    review 為真的是只回報、不會清理的項目；沒有項目的區段不列出。
+    """
+    sections, potential = [], None
+    for line in text.splitlines():
+        if line.startswith(MOLE_SECTION):
+            sections.append({"title": line[len(MOLE_SECTION):].strip(), "items": []})
+        elif line.startswith(MOLE_POTENTIAL):
+            potential = line[len(MOLE_POTENTIAL):].strip()
+        elif sections and line.startswith("  ") and line.strip()[:1] in (MOLE_CLEAN, MOLE_REVIEW):
+            body = line.strip()
+            label, _sep, detail = body[1:].strip().partition(" \u00b7 ")
+            sections[-1]["items"].append({"label": label, "detail": detail.removesuffix(" dry"), "review": body[0] == MOLE_REVIEW})
+    return [s for s in sections if s["items"]], potential
+
+
+def mole_report():
+    rc, out = mole_run(["clean", "--dry-run"], timeout=300)
+    sections, potential = parse_mole_report(out)
+    if rc != 0 and not sections:
+        raise RuntimeError(out.strip().splitlines()[-1] if out.strip() else "mole clean --dry-run")
+    return sections, potential
+
+
+def mole_clean():
+    return mole_run(["clean"], timeout=1800)
+
+
 # ---------- 硬體 ----------
 def parse_upower(text):
     """upower -i 的輸出 -> {欄位: 值}"""

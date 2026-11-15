@@ -630,5 +630,12 @@
   "避免登入後分享螢幕時沒有選擇視窗，重新登入後生效": "Keeps the window picker working; applies at next login",
   "已重新啟動": "Restarted",
   "重新啟動螢幕分享服務": "Restart screen sharing",
-  "分享螢幕時沒有出現選擇視窗": "When the window picker doesn't appear while sharing your screen"
+  "分享螢幕時沒有出現選擇視窗": "When the window picker doesn't appear while sharing your screen",
+  "快取": "Caches",
+  "系統": "System",
+  "由 Mole 找出": "Found by Mole",
+  "清理快取？": "Clean caches?",
+  "Mole 會刪除找到的快取與垃圾桶裡的檔案，應用程式之後會自己重建；正在執行的程式的快取不會動。這個動作無法還原。": "Mole deletes the caches it found and the files in the Trash; apps rebuild their caches. Caches of running programs are left alone. This can't be undone.",
+  "{n} 項": "{n} items",
+  "不清理": "Not cleaned"
 }

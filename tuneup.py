@@ -2229,21 +2229,56 @@ class Tuneup(Adw.Application):
     }
 
     def page_cleanup(self):
-        p = Adw.PreferencesPage()
-        g = group()
+        p = Page()
+        mole = system.mole_path()
+        if mole:
+            cache = group("快取")
+            potential = value("…")
+            clean = btn("清理", on_click=lambda: self.run_system(
+                "清理快取？", _("Mole 會刪除找到的快取與垃圾桶裡的檔案，應用程式之後會自己重建；正在執行的程式的快取不會動。這個動作無法還原。"),
+                "清理", system.mole_clean, "cleanup", "已清理"))
+            clean.set_sensitive(False)
+            cache.add(row("可釋放的空間", "由 Mole 找出", None, [potential, clean]))
+            p.add(cache)
+            report = group()
+            report_loading = row("載入中…")
+            report.add(report_loading)
+            p.add(report)
+
+            def fill_report(found, err):
+                report.remove(report_loading)
+                if err:
+                    report.add(row(_("無法讀取"), err, data=True))
+                    return
+                sections, total = found
+                potential.set_label(total or "0B")
+                clean.set_sensitive(any(not i["review"] for s in sections for i in s["items"]))
+                for section in sections:
+                    ex = Adw.ExpanderRow(title=esc(section["title"]), subtitle=esc(_("{n} 項").format(n=len(section["items"]))))
+                    for item in section["items"]:
+                        ex.add_row(row(item["label"], item["detail"] or None, None, [chip("不清理")] if item["review"] else [], data=True))
+                    report.add(ex)
+                self.mark_rows(report)
+            in_background(system.mole_report, fill_report)
+
+        # 有 Mole 時縮圖與垃圾桶由它清，這裡只留需要管理員權限的項目
+        g = group("系統") if mole else group()
         total = value("…")
         g.add(row("可釋放的空間", "清理前會先確認；清掉的東西無法從歷史還原", None, [total]))
         p.add(g)
-        items = group("項目")
+        items = g if mole else group("項目")
         loading = row("載入中…")
         items.add(loading)
-        p.add(items)
+        if not mole:
+            p.add(items)
 
         def fill(found, err):
             items.remove(loading)
             if err:
                 items.add(row(_("無法讀取"), err, data=True))
                 return
+            if mole:
+                found = [i for i in found if i["root"]]
             total.set_label(system.human(sum(i["size"] or 0 for i in found)))
             for i in found:
                 title, desc = self.CLEANUP[i["id"]]
@@ -2256,7 +2291,7 @@ class Tuneup(Adw.Application):
                 items.add(row(title, desc, None, [value(amount), b]))
             self.mark_rows(items)
         in_background(system.cleanup_items, fill)
-        return p
+        return self.tabbed("cleanup", p)
 
     # ---------- 驅動與硬體 ----------
     def page_hardware(self):

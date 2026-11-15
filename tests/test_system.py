@@ -70,6 +70,21 @@ class SystemTest(unittest.TestCase):
             "/usr/share/applications/org.gnome.Nautilus.desktop": ["nautilus"],
             "/usr/share/applications/writer.desktop": ["libreoffice-common", "libreoffice-writer"]})
 
+    def test_mole_report(self):
+        text = ("Clean Your Linux\n\nDry Run Mode, Preview only, no deletions\n\n"
+                "\u27a4 Browsers\n  \u25cb Google Chrome cache \u00b7 skipped while chrome is running\n\n"
+                "\u27a4 Developer tools\n  \u25cb npm cache \u00b7 3 items, 784.3MB dry\n  \u25cb TypeScript cache \u00b7 4.6MB dry\n\n"
+                "\u27a4 Games\n  \u2713 Nothing to tidy\n\n"
+                "\u27a4 Not cleaned\n  \u2299 ~/.cache/Homebrew \u00b7 1.47GB\n\n"
+                "======\nDry run complete - no changes made\nPotential space: 1.56GB \u00b7 353 items\n======\n")
+        sections, potential = system.parse_mole_report(text)
+        self.assertEqual([(s["title"], [(i["label"], i["detail"], i["review"]) for i in s["items"]]) for s in sections], [
+            ("Browsers", [("Google Chrome cache", "skipped while chrome is running", False)]),
+            ("Developer tools", [("npm cache", "3 items, 784.3MB", False), ("TypeScript cache", "4.6MB", False)]),
+            ("Not cleaned", [("~/.cache/Homebrew", "1.47GB", True)])])
+        self.assertEqual(potential, "1.56GB \u00b7 353 items")
+        self.assertEqual(system.parse_mole_report("mole: command failed\n"), ([], None))
+
     def test_upgradable(self):
         text = "Listing...\ngdm3/stonking-updates 51.0-0ubuntu1.1 amd64 [upgradable from: 51.0-0ubuntu1]\n"
         self.assertEqual(system.parse_upgradable(text), [{"name": "gdm3", "new": "51.0-0ubuntu1.1", "old": "51.0-0ubuntu1"}])
