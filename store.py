@@ -201,18 +201,20 @@ def restore_to(entry_id):
 
 
 # ---------- 設定檔 ----------
-# {"name", "created", "settings": {"<schema> <key>": GVariant 文字}, "extensions": {uuid: bool}}
+# {"name", "created", "settings": {"<schema> <key>": GVariant 文字}, "extensions": {uuid: bool}, "schemas": [schema]}
 # settings 只記錄與預設值不同的項目；套用時，設定檔沒列的已知項目會還原為預設值。
+# schemas 是建立時那台電腦有的設定組；不在其中的（例如那台沒裝的擴充功能）套用時不動。
 
 def capture(name, keys, extensions):
     """keys: [(schema, key)]；extensions: {uuid: 是否啟用}"""
-    saved = {}
+    saved, schemas = {}, set()
     for schema, key in keys:
         if has_key(schema, key):
+            schemas.add(schema)
             text = user_text(schema, key)
             if text is not None:
                 saved[f"{schema} {key}"] = text
-    return {"name": name, "created": int(time.time()), "settings": saved, "extensions": dict(extensions)}
+    return {"name": name, "created": int(time.time()), "settings": saved, "extensions": dict(extensions), "schemas": sorted(schemas)}
 
 
 def valid_profile(data):
@@ -220,20 +222,25 @@ def valid_profile(data):
     return (isinstance(data, dict) and isinstance(data.get("name"), str) and data["name"].strip()
             and isinstance(data.get("settings"), dict) and all(isinstance(k, str) and isinstance(v, str) for k, v in data["settings"].items())
             and isinstance(data.get("extensions", {}), dict) and all(isinstance(v, bool) for v in data.get("extensions", {}).values())
-            and isinstance(data.get(EXTENSION_SETTINGS, False), bool))
+            and isinstance(data.get(EXTENSION_SETTINGS, False), bool)
+            and isinstance(data.get("schemas", []), list) and all(isinstance(s, str) for s in data.get("schemas", [])))
 
 
 def imported_profile(data):
     """外部來的設定檔只留下認得的欄位。"""
-    return {"name": data["name"].strip(), "created": data.get("created", 0), "settings": data["settings"],
-            "extensions": data.get("extensions", {}), EXTENSION_SETTINGS: data.get(EXTENSION_SETTINGS, False)}
+    profile = {"name": data["name"].strip(), "created": data.get("created", 0), "settings": data["settings"],
+               "extensions": data.get("extensions", {}), EXTENSION_SETTINGS: data.get(EXTENSION_SETTINGS, False)}
+    if "schemas" in data:
+        profile["schemas"] = data["schemas"]
+    return profile
 
 
 def profile_changes(profile, keys, extensions, names):
     """套用這個設定檔會造成的變更。只處理 keys 內的已知設定，設定檔裡其他內容一律忽略。"""
     changes = []
+    covered = set(profile["schemas"]) if "schemas" in profile else None  # 較早的設定檔沒有記錄，照舊涵蓋全部
     for schema, key in keys:
-        if not has_key(schema, key):
+        if not has_key(schema, key) or covered is not None and schema not in covered:
             continue
         target = profile["settings"].get(f"{schema} {key}")
         if target is not None:

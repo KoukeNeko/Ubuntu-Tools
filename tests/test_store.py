@@ -81,6 +81,21 @@ class StoreTest(unittest.TestCase):
         store.apply("profile", store.profile_changes(profile, keys, {}, {}))
         self.assertTrue(store.settings("org.test.dock").get_boolean("transparent"))
 
+    def test_profile_leaves_settings_its_machine_did_not_have(self):
+        schemas = store.EXTENSION_DIRS[0] / "shelf@test" / "schemas"
+        schemas.mkdir(parents=True)
+        (schemas / "shelf.gschema.xml").write_text(
+            '<schemalist><schema id="org.test.shelf" path="/org/test/shelf/">'
+            '<key name="transparent" type="b"><default>false</default></key></schema></schemalist>')
+        subprocess.run(["glib-compile-schemas", str(schemas)], check=True)
+        store.forget_absent()
+        # Made on a machine without the shelf extension, so its keys are not asked for
+        profile = store.capture("other", [(IF, "cursor-size"), ("org.test.missing", "key")], {})
+        store.apply("tweak", [store.gsettings_change("org.test.shelf", "transparent", "true")])
+        keys = [(IF, "cursor-size"), ("org.test.shelf", "transparent")]
+        self.assertEqual(store.profile_changes(profile, keys, {}, {}), [])
+        self.assertTrue(store.valid_profile(store.imported_profile(profile)))
+
     def test_failed_apply_still_records_what_it_wrote(self):
         changes = [change("cursor-size", 48), store.extension_change("a@b", "A", False, True)]
         with mock.patch.object(store, "shell_call", side_effect=store.GLib.Error("shell is busy")):
