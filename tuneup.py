@@ -630,8 +630,13 @@ class Tuneup(Adw.Application):
         self.search_text = ""
 
     # ---------- 共用對話框 ----------
-    def confirm(self, heading, body, action_label, on_yes, destructive=False, on_no=None):
+    def confirm(self, heading, body, action_label, on_yes, destructive=False, on_no=None, details=None):
+        """details: 很長的清單，放在可捲動的區塊裡完整列出，不截斷。"""
         d = Adw.AlertDialog(heading=_(heading), body=body)
+        if details:
+            label = Gtk.Label(label=details, xalign=0, wrap=True, selectable=True)
+            d.set_extra_child(Gtk.ScrolledWindow(child=label, max_content_height=320, propagate_natural_height=True,
+                                                 hscrollbar_policy=Gtk.PolicyType.NEVER))
         d.add_response("cancel", _("取消"))
         d.add_response("ok", _(action_label))
         d.set_response_appearance("ok", Adw.ResponseAppearance.DESTRUCTIVE if destructive else Adw.ResponseAppearance.SUGGESTED)
@@ -2484,11 +2489,9 @@ class Tuneup(Adw.Application):
     def apply_profile(self, name):
         profile = self.find_profile(name)
         changes = self.profile_diff(profile)
-        lines = [self.change_line(c) for c in changes[:12]]
-        if len(changes) > 12:
-            lines.append(_("…以及另外 {n} 項").format(n=len(changes) - 12))
-        self.confirm(_("套用設定檔「{name}」？").format(name=name), "\n".join(lines), "套用",
-                     lambda: self.commit("profile", changes, "已套用，可在「歷史」還原", label=name, page="pf"))
+        self.confirm(_("套用設定檔「{name}」？").format(name=name), "", "套用",
+                     lambda: self.commit("profile", changes, "已套用，可在「歷史」還原", label=name, page="pf"),
+                     details="\n".join(self.change_line(c) for c in changes))
 
     def rename_profile(self, name):
         def renamed(new):
