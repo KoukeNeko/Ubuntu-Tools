@@ -1501,7 +1501,7 @@ class Tuneup(Adw.Application):
         return w
 
     def tweak_page(self, nid, groups):
-        p = Adw.PreferencesPage()
+        p = Page()
         for gt, *desc, items in groups:
             rows = [w for w in (self.tweak_row(item) for item in items) if w]
             if not rows:
@@ -1518,7 +1518,7 @@ class Tuneup(Adw.Application):
             p.add(self.dock_extensions_group())
         if nid == WINDOW_PAGE:
             p.add(self.sidebar_blur_group())
-        return p
+        return self.tabbed(nid, p)
 
     def extension_switch(self, uuid, title, name, page):
         """一個由擴充功能提供的效果：沒安裝時是安裝鍵，裝好後是啟用開關。"""
