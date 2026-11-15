@@ -46,7 +46,7 @@ install -m 644 packaging/io.github.doeshing.Tuneup.desktop "$stage/usr/share/app
 
 cat > "$stage/usr/bin/tuneup" <<'LAUNCHER'
 #!/bin/sh
-exec python3 /usr/share/tuneup/tuneup.py "$@"
+exec /usr/bin/python3 /usr/share/tuneup/tuneup.py "$@"
 LAUNCHER
 chmod 755 "$stage/usr/bin/tuneup"
 
