@@ -478,6 +478,8 @@ BLUR_ROOT = "org.gnome.shell.extensions.blur-my-shell"
 BLUR_DOCK = "org.gnome.shell.extensions.blur-my-shell.dash-to-dock"
 # Blur my Shell 預設的模糊半徑是 30，側邊欄後方仍看得出形狀；另外加一組很霧的給應用程式用，不動預設那組
 SIDEBAR_PIPELINE = "pipeline_tuneup_sidebar"
+# 開啟側邊欄模糊時，頂部列、它的選單與概覽也用同一組，整個桌面的毛玻璃看起來一樣
+SHELL_BLURS = [f"{BLUR_ROOT}.{part}" for part in ("panel", "popup", "overview")]
 SIDEBAR_PIPELINE_VALUE = ("{'name': <'Tuneup Sidebar'>, 'effects': <[<{'type': <'dual_kawase_blur'>, 'id': <'effect_tuneup_sidebar'>, "
                           "'params': <{'unscaled_radius': <200>, 'brightness': <1.0>}>}>]>}")
 SIDEBAR = (  # (id, 標題, 圖示)；None = 分隔線。調校分類直接由 TWEAKS 產生
@@ -1619,8 +1621,10 @@ class Tuneup(Adw.Application):
                 system.set_sidebar_css(on)
             except OSError as err:
                 return self.toast_raw(_("無法套用：{error}").format(error=str(err)))
+            shell = [schema for schema in SHELL_BLURS if store.has_key(schema, "pipeline")]
             if not on:
-                return write({"enable-all": False}, "重新開啟應用程式後生效", [store.gsettings_change(BLUR_APPS, "pipeline", None)])
+                return write({"enable-all": False}, "重新開啟應用程式後生效", [store.gsettings_change(BLUR_APPS, "pipeline", None)]
+                             + [store.gsettings_change(schema, "pipeline", None) for schema in shell])
             pipelines = GLib.VariantBuilder.new(GLib.VariantType("a{sa{sv}}"))
             current = store.settings(BLUR_ROOT).get_value("pipelines")
             for name_ in current.keys():
@@ -1629,8 +1633,11 @@ class Tuneup(Adw.Application):
             pipelines.add_value(GLib.Variant.new_dict_entry(
                 GLib.Variant("s", SIDEBAR_PIPELINE), GLib.Variant.parse(GLib.VariantType("a{sv}"), SIDEBAR_PIPELINE_VALUE, None, None)))
             # 不透明度交給樣式，Blur my Shell 不再把整個視窗調淡
+            pipeline = GLib.Variant("s", SIDEBAR_PIPELINE).print_(False)
+            menus = [store.gsettings_change(schema, "blur-menus", "true") for schema in shell if schema.endswith(".popup")]
             write({"blur": True, "enable-all": True, "opacity": 255, "dynamic-opacity": False, "pipeline": SIDEBAR_PIPELINE},
-                  "重新開啟應用程式後生效", [store.gsettings_change(BLUR_ROOT, "pipelines", pipelines.end().print_(False))])
+                  "重新開啟應用程式後生效", [store.gsettings_change(BLUR_ROOT, "pipelines", pipelines.end().print_(False))]
+                  + [store.gsettings_change(schema, "pipeline", pipeline) for schema in shell] + menus)
         w.connect("notify::active", toggled)
         g.add(w)
 

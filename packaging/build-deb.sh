@@ -36,7 +36,7 @@ tar -C "$dhruva" --exclude=.git --exclude=media --exclude=docs --exclude=tests -
 panel=extension/tuneup-panel@koukeneko.github.io
 shell_ext="$stage/usr/share/gnome-shell/extensions/${panel#extension/}"
 install -d "$shell_ext/schemas"
-install -m 644 "$panel/metadata.json" "$panel/extension.js" "$shell_ext/"
+install -m 644 "$panel/metadata.json" "$panel/extension.js" "$panel/stylesheet.css" "$shell_ext/"
 install -m 644 "$panel"/schemas/*.gschema.xml "$shell_ext/schemas/"
 glib-compile-schemas --strict "$shell_ext/schemas"
 
