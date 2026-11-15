@@ -628,6 +628,7 @@ class Tuneup(Adw.Application):
         self.key_widgets = {}  # (schema, key) -> [列]
         self.loading = False
         self.search_text = ""
+        self.panel_watch = 0  # 頂部列順序的變更通知
 
     # ---------- 共用對話框 ----------
     def confirm(self, heading, body, action_label, on_yes, destructive=False, on_no=None, details=None):
@@ -1839,6 +1840,12 @@ class Tuneup(Adw.Application):
         # 剛更新套件、還沒重新登入時，執行中的擴充功能和它的設定可能還是上一版的
         if ext["state"] != EXT_STATE_ACTIVE or not store.has_key(PANEL, "box-spacing"):
             return p
+        # 在頂部列按住 Ctrl 拖曳會直接改寫順序；畫面跟著更新，之後的上移、下移才不會用舊的順序蓋回去
+        settings = store.settings(PANEL)
+        if self.panel_watch:
+            settings.disconnect(self.panel_watch)
+        self.panel_watch = settings.connect("changed::order", lambda *_a: (PANEL, "order") not in self.pending
+                                            and self.refresh(self.stack.get_visible_child_name()))
         try:
             items = json.loads(store.settings(PANEL).get_string("items"))
         except ValueError:
