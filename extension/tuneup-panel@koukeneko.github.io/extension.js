@@ -17,6 +17,30 @@ import {Extension, InjectionManager} from 'resource:///org/gnome/shell/extension
 const BOXES = [['left', '_leftBox'], ['center', '_centerBox'], ['right', '_rightBox']];
 const APP_INDICATOR_ROLE = 'appindicator-';
 
+// Blur my Shell draws a menu's blur a frame or two after the menu first
+// shows, which a fade used to hide. Without one, the menu stays invisible for
+// those frames and then appears at once, already blurred.
+const BLUR_SETTLE_FRAMES = 2;
+
+function holdUntilBlurred(boxPointer, opening) {
+    if (boxPointer._tuneupHoldId) {
+        global.stage.disconnect(boxPointer._tuneupHoldId);
+        boxPointer._tuneupHoldId = 0;
+    }
+    if (!opening)
+        return;
+
+    boxPointer.opacity = 0;
+    let frames = BLUR_SETTLE_FRAMES;
+    boxPointer._tuneupHoldId = global.stage.connect('after-paint', () => {
+        if (--frames > 0)
+            return;
+        global.stage.disconnect(boxPointer._tuneupHoldId);
+        boxPointer._tuneupHoldId = 0;
+        boxPointer.opacity = 255;
+    });
+}
+
 export default class PanelManager extends Extension {
     enable() {
         this._settings = this.getSettings();
@@ -39,6 +63,8 @@ export default class PanelManager extends Extension {
                 function (animate, onComplete) {
                     const fromBar = this._sourceActor && Main.panel.contains(this._sourceActor);
                     original.call(this, fromBar ? BoxPointer.PopupAnimation.NONE : animate, onComplete);
+                    if (fromBar)
+                        holdUntilBlurred(this, method === 'open');
                 });
         }
         this._drag = null;
