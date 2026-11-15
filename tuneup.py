@@ -1896,7 +1896,7 @@ class Tuneup(Adw.Application):
     PANEL_ALWAYS_SHOWN = {"quickSettings"}  # 關機、網路、音量都在裡面，和 macOS 的控制中心一樣不能隱藏
 
     def page_panel(self):
-        p = Adw.PreferencesPage()
+        p = Page()
         g = group()
         p.add(g)
         title, name = "頂部列管理", "Tuneup Panel"
@@ -2003,7 +2003,7 @@ class Tuneup(Adw.Application):
                     suffix.append(shown)
                 g.add(row(names[item_id], suffix=suffix, data=True))
             p.add(g)
-        return p
+        return self.tabbed("panel", p)
 
     def page_xkb(self):
         p = Adw.PreferencesPage()
@@ -2378,7 +2378,7 @@ class Tuneup(Adw.Application):
     def page_apps(self):
         nav = Adw.NavigationView()
         self.apps_nav = nav
-        p = Adw.PreferencesPage()
+        p = Page()
         g = group()
         total = value("…")
         g.add(row("已安裝的應用程式", "只列出你自己安裝的；被相依帶進來的套件不在這裡", None, [total]))
@@ -2399,7 +2399,8 @@ class Tuneup(Adw.Application):
             snap_group.remove(loading[0])
             apt_group.remove(loading[1])
             if err:
-                snap_group.add(row(_("無法讀取"), err, data=True))
+                for g in (snap_group, apt_group):
+                    g.add(row(_("無法讀取"), err, data=True))
                 return
             snaps = [s for s in found["snaps"] if not s["system"]]
             packages = sorted(found["apt"], key=lambda pkg: -pkg["size"])
@@ -2417,9 +2418,10 @@ class Tuneup(Adw.Application):
             if not packages:
                 apt_group.add(row("沒有手動安裝的 apt 套件", "apt-mark showmanual 沒有回報任何套件"))
             self.page_words["apps"] = [s["name"].lower() for s in snaps] + [pkg["name"].lower() for pkg in packages]
-            self.mark_rows(p)
+            self.mark_rows(view)
         in_background(lambda: {"snaps": system.snaps(), "apt": system.apt_manual()}, fill)
-        nav.add(Adw.NavigationPage(title=_("應用程式"), child=p))
+        view = self.tabbed("apps", p)
+        nav.add(Adw.NavigationPage(title=_("應用程式"), child=view))
         self.watch_nav("apps", nav)
         return nav
 
