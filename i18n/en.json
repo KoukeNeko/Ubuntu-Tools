@@ -586,7 +586,6 @@
   "已移除 {names}，檔案在垃圾桶": "Removed {names}; the files are in the trash",
   "移除剛安裝的主題？": "Remove the theme you just installed?",
   "會移到垃圾桶；如果正在使用，會先還原為預設主題。": "It will be moved to the trash; if it is in use, the default theme is restored first.",
-  "安裝、套用、移除主題；按「選取」可以一次移除多個": "Install, apply and remove themes; use Select to remove several at once",
   "選取": "Select",
   "移除 {n} 個": "Remove {n}",
   "無法移除：{names}": "Could not remove: {names}",

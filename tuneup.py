@@ -629,6 +629,7 @@ class Tuneup(Adw.Application):
         self.loading = False
         self.search_text = ""
         self.panel_watch = 0  # 頂部列順序的變更通知
+        self.theme_kind = "icons"  # 主題頁顯示中的類別
 
     # ---------- 共用對話框 ----------
     def confirm(self, heading, body, action_label, on_yes, destructive=False, on_no=None, details=None):
@@ -700,6 +701,8 @@ class Tuneup(Adw.Application):
     def page_scroller(self):
         """目前頁面的捲動區（子頁面導覽時取最上層那一頁的）。"""
         def first_scroller(w):
+            if isinstance(w, Adw.ViewStack):  # 頁內分頁只看顯示中的那一頁
+                w = w.get_visible_child()
             c = w.get_first_child()
             while c:
                 if isinstance(c, Gtk.ScrolledWindow):
@@ -1593,6 +1596,8 @@ class Tuneup(Adw.Application):
 
     # ---------- 主題與圖示 ----------
     THEME_TITLES = {"icons": "圖示主題", "cursors": "游標主題", "gtk": "應用程式主題", "shell": "Shell 主題"}
+    THEME_ICONS = {"icons": "image-x-generic-symbolic", "cursors": "input-mouse-symbolic",
+                   "gtk": "preferences-desktop-appearance-symbolic", "shell": "user-desktop-symbolic"}
 
     def apply_theme(self, kind, name):
         schema, key = market.KINDS[kind]["setting"]
@@ -1772,15 +1777,11 @@ class Tuneup(Adw.Application):
     def page_themes(self):
         nav = Adw.NavigationView()
         self.theme_nav = nav
-        p = Adw.PreferencesPage()
-        g = group()
+        stack = Adw.ViewStack()
         self.theme_checks = []
         self.theme_select_button = btn("選取", on_click=lambda: self.set_theme_selecting(not self.theme_remove_button.get_visible()))
         self.theme_remove_button = btn("移除", "destructive-action", on_click=self.remove_selected_themes)
         self.theme_remove_button.set_visible(False)
-        g.add(row("主題與圖示", "安裝、套用、移除主題；按「選取」可以一次移除多個", Gtk.Image(icon_name="preferences-desktop-theme-symbolic"),
-                  [self.theme_remove_button, self.theme_select_button]))
-        p.add(g)
         # 正在使用的主題資料夾不能移除（同一個資料夾可能同時提供圖示與游標）
         self.themes_in_use = set()
         for kind in self.THEME_TITLES:
@@ -1793,7 +1794,8 @@ class Tuneup(Adw.Application):
             usable = store.has_key(schema, key)
             current = store.settings(schema).get_string(key) if usable else None
             themes = market.installed_themes(kind)
-            g = group(title)
+            p = Adw.PreferencesPage()
+            g = group()
             r = row("市集", "從 gnome-look.org 瀏覽與安裝", None, [self.next_icon()])
             r.set_activatable(True)
             r.connect("activated", lambda *_a, kind=kind: self.show_theme_store(kind))
@@ -1812,8 +1814,25 @@ class Tuneup(Adw.Application):
                 g.add(ex)
             self.page_words["themes"] += [t["name"].lower() for t in themes]
             p.add(g)
+            stack.add_titled_with_icon(p, kind, _(title), self.THEME_ICONS[kind])
         self.theme_select_button.set_sensitive(bool(self.theme_checks))
-        nav.add(Adw.NavigationPage(title=_("主題與圖示"), child=p))
+        # 重新建立畫面後留在原本的類別
+        stack.set_visible_child_name(self.theme_kind)
+        stack.connect("notify::visible-child-name", lambda st, _p: setattr(self, "theme_kind", st.get_visible_child_name()))
+        actions = Gtk.Box(spacing=6, valign=Gtk.Align.CENTER)
+        actions.append(self.theme_remove_button)
+        actions.append(self.theme_select_button)
+        # 視窗窄時分類改到底部（見 build_ui 的 collapse），上方只留選取
+        # 分段切換鈕要 libadwaita 1.7；更舊的系統退回一排按鈕樣式的切換器
+        self.theme_switcher = (Adw.InlineViewSwitcher(stack=stack) if hasattr(Adw, "InlineViewSwitcher")
+                               else Adw.ViewSwitcher(stack=stack, policy=Adw.ViewSwitcherPolicy.WIDE))
+        self.theme_switcher_bar = Adw.ViewSwitcherBar(stack=stack)
+        bar = Gtk.CenterBox(margin_start=12, margin_end=12, margin_top=6, margin_bottom=6,
+                            center_widget=self.theme_switcher, end_widget=actions)
+        view = Adw.ToolbarView(content=stack)
+        view.add_top_bar(bar)
+        view.add_bottom_bar(self.theme_switcher_bar)
+        nav.add(Adw.NavigationPage(title=_("主題與圖示"), child=view))
         self.watch_nav("themes", nav)
         return nav
 
@@ -2871,6 +2890,8 @@ class Tuneup(Adw.Application):
         self.mark_rows(split)
         collapse = Adw.Breakpoint.new(Adw.BreakpointCondition.parse(NARROW_WINDOW))
         collapse.add_setter(split, "collapsed", True)
+        collapse.add_setter(self.theme_switcher, "visible", False)
+        collapse.add_setter(self.theme_switcher_bar, "reveal", True)
         responsive = Adw.BreakpointBin(child=split, width_request=360, height_request=360)
         responsive.add_breakpoint(collapse)
         self.toasts.set_child(responsive)
