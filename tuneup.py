@@ -2046,7 +2046,7 @@ class Tuneup(Adw.Application):
         return w
 
     def page_audio(self):
-        p = Adw.PreferencesPage()
+        p = Page()
         state = audio.read_state()
         if state is None:
             g = group()
@@ -2121,7 +2121,7 @@ class Tuneup(Adw.Application):
         if not midi:
             g.add(row("沒有偵測到 MIDI 裝置", "接上裝置後按選單裡的「重新整理」"))
         p.add(g)
-        return p
+        return self.tabbed("audio", p)
 
     # ---------- 啟動應用程式 ----------
     def autostart_entries(self):
@@ -2250,7 +2250,7 @@ class Tuneup(Adw.Application):
 
     # ---------- 驅動與硬體 ----------
     def page_hardware(self):
-        p = Adw.PreferencesPage()
+        p = Page()
         g = group()
         g.add(row(self.sys_name, self.sys_detail, Gtk.Image(icon_name="computer-symbolic"), data=True))
         p.add(g)
@@ -2291,9 +2291,10 @@ class Tuneup(Adw.Application):
             if shutil.which("software-properties-gtk"):
                 drv.add(row("管理驅動程式", "開啟系統的「額外驅動程式」", None,
                             [btn("開啟", on_click=lambda: subprocess.Popen(["software-properties-gtk", "--open-tab=4"]))]))
-            self.mark_rows(p)
+            self.mark_rows(view)
         in_background(lambda: {"batteries": system.batteries(), "firmware": system.firmware(), "drivers": system.drivers()}, fill)
-        return p
+        view = self.tabbed("hardware", p)
+        return view
 
     # ---------- 備份與還原 ----------
     def install_row(self, name, package, desc):
@@ -2303,7 +2304,7 @@ class Tuneup(Adw.Application):
         return row(_("尚未安裝 {name}").format(name=name), _(desc), Gtk.Image(icon_name="dialog-information-symbolic"), [b], data=True)
 
     def page_backup(self):
-        p = Adw.PreferencesPage()
+        p = Page()
         used, free = system.root_usage()
         tools = system.backup_tools()
         g = group()
@@ -2339,7 +2340,7 @@ class Tuneup(Adw.Application):
         g.add(row("製作 Clonezilla 開機隨身碟", "官方說明與下載", None,
                   [btn("開啟", on_click=lambda: Gtk.UriLauncher(uri="https://clonezilla.org/clonezilla-live.php").launch(self.win, None, None))]))
         p.add(g)
-        return p
+        return self.tabbed("backup", p)
 
     # ---------- 應用程式 ----------
     NONINTERACTIVE = ["env", "DEBIAN_FRONTEND=noninteractive"]
@@ -2427,7 +2428,7 @@ class Tuneup(Adw.Application):
 
     # ---------- 系統更新 ----------
     def page_updates(self):
-        p = Adw.PreferencesPage()
+        p = Page()
         g = group()
         summary = row("系統更新", "載入中…", Gtk.Image(icon_name="software-update-available-symbolic"))
         upgrade = btn("全部更新", "suggested-action", on_click=lambda: self.run_system(
@@ -2482,9 +2483,10 @@ class Tuneup(Adw.Application):
                 history.add(row(e["time"], " — ".join(x for x in (counts, e["command"]) if x), data=True))
             if not found["history"]:
                 history.add(row("沒有更新紀錄", "讀不到 apt 的紀錄檔，或還沒有任何紀錄"))
-            self.mark_rows(p)
+            self.mark_rows(view)
         in_background(lambda: {"upgradable": system.upgradable(), "held": system.held(), "history": system.apt_history()}, fill)
-        return p
+        view = self.tabbed("updates", p)
+        return view
 
     # ---------- 錯誤記錄 ----------
     # ---------- 常用工具 ----------
@@ -2630,7 +2632,7 @@ class Tuneup(Adw.Application):
         self.prompt("從網址匯入", "https://…", "匯入", lambda url: in_background(lambda: market.fetch_json(url, MAX_IMPORT_BYTES), self.add_imported))
 
     def page_pf(self):
-        p = Adw.PreferencesPage()
+        p = Page()
         g = group()
         g.add(row("從目前狀態建立設定檔", "記下所有調校值與擴充功能的啟用狀態", None,
                   [btn("建立", "suggested-action", on_click=lambda: self.prompt("建立設定檔", "名稱", "建立", self.create_profile))]))
@@ -2655,7 +2657,7 @@ class Tuneup(Adw.Application):
         g.add(row("從檔案匯入", "選擇 .tuneup 設定檔", Gtk.Image(icon_name="document-open-symbolic"), [btn("選擇檔案", on_click=self.import_file)]))
         g.add(row("從網址匯入", "GitHub Gist 的 raw 連結或任何 https 網址", Gtk.Image(icon_name="insert-link-symbolic"), [btn("貼上網址", on_click=self.import_url)]))
         p.add(g)
-        return p
+        return self.tabbed("pf", p)
 
     # ---------- 歷史 ----------
     def audio_value(self, v):
@@ -2752,7 +2754,7 @@ class Tuneup(Adw.Application):
 
     # ---------- 模組中心 ----------
     def page_mods(self):
-        p = Adw.PreferencesPage()
+        p = Page()
         live = sum(1 for m in MODULES if m[2])
         g = group()
         g.add(row("模組", "每個功能是一個模組：頁面 + 動作 + 還原邏輯", None,
@@ -2767,7 +2769,7 @@ class Tuneup(Adw.Application):
                         r.add_suffix(chip("內建", "success"))
                     g.add(r)
             p.add(g)
-        return p
+        return self.tabbed("mods", p)
 
     # ---------- 框架 ----------
     def toast(self, t):
