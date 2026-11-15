@@ -478,7 +478,7 @@ BLUR_ROOT = "org.gnome.shell.extensions.blur-my-shell"
 BLUR_DOCK = "org.gnome.shell.extensions.blur-my-shell.dash-to-dock"
 # Blur my Shell 預設的模糊半徑是 30，側邊欄後方仍看得出形狀；另外加一組很霧的給應用程式用，不動預設那組
 SIDEBAR_PIPELINE = "pipeline_tuneup_sidebar"
-# 開啟側邊欄模糊時，頂部列、它的選單與概覽也用同一組，整個桌面的毛玻璃看起來一樣
+# 選單毛玻璃：頂部列、它的選單與概覽也用側邊欄那一組，整個桌面的毛玻璃看起來一樣
 SHELL_BLURS = [f"{BLUR_ROOT}.{part}" for part in ("panel", "popup", "overview")]
 SIDEBAR_PIPELINE_VALUE = ("{'name': <'Tuneup Sidebar'>, 'effects': <[<{'type': <'dual_kawase_blur'>, 'id': <'effect_tuneup_sidebar'>, "
                           "'params': <{'unscaled_radius': <200>, 'brightness': <1.0>}>}>]>}")
@@ -519,6 +519,33 @@ def wm_class_of(info):
 
 def esc(s):
     return GLib.markup_escape_text(s)
+
+
+def sidebar_pipeline_change():
+    """把側邊欄那一組模糊加進 Blur my Shell 的清單，其他組原樣保留。"""
+    pipelines = GLib.VariantBuilder.new(GLib.VariantType("a{sa{sv}}"))
+    current = store.settings(BLUR_ROOT).get_value("pipelines")
+    for name in current.keys():
+        if name != SIDEBAR_PIPELINE:
+            pipelines.add_value(GLib.Variant.new_dict_entry(GLib.Variant("s", name), current.lookup_value(name, None)))
+    pipelines.add_value(GLib.Variant.new_dict_entry(
+        GLib.Variant("s", SIDEBAR_PIPELINE), GLib.Variant.parse(GLib.VariantType("a{sv}"), SIDEBAR_PIPELINE_VALUE, None, None)))
+    return store.gsettings_change(BLUR_ROOT, "pipelines", pipelines.end().print_(False))
+
+
+def glass_menu_changes(on):
+    """選單毛玻璃：頂部列管理的樣式，加上 Blur my Shell 讓頂部列、選單與概覽改用側邊欄那一組模糊。
+    關閉時模糊組合回到預設；「模糊選單」保持開著，那是 Blur my Shell 自己的預設。"""
+    changes = [store.gsettings_change(PANEL, "glass-menus", "true" if on else "false")]
+    shell = [schema for schema in SHELL_BLURS if store.has_key(schema, "pipeline")]
+    if not shell:
+        return changes
+    if not on:
+        return changes + [store.gsettings_change(schema, "pipeline", None) for schema in shell]
+    pipeline = GLib.Variant("s", SIDEBAR_PIPELINE).print_(False)
+    return (changes + [sidebar_pipeline_change()]
+            + [store.gsettings_change(schema, "pipeline", pipeline) for schema in shell]
+            + [store.gsettings_change(schema, "blur-menus", "true") for schema in shell if schema.endswith(".popup")])
 
 
 def same(a, b):
@@ -1621,23 +1648,11 @@ class Tuneup(Adw.Application):
                 system.set_sidebar_css(on)
             except OSError as err:
                 return self.toast_raw(_("無法套用：{error}").format(error=str(err)))
-            shell = [schema for schema in SHELL_BLURS if store.has_key(schema, "pipeline")]
             if not on:
-                return write({"enable-all": False}, "重新開啟應用程式後生效", [store.gsettings_change(BLUR_APPS, "pipeline", None)]
-                             + [store.gsettings_change(schema, "pipeline", None) for schema in shell])
-            pipelines = GLib.VariantBuilder.new(GLib.VariantType("a{sa{sv}}"))
-            current = store.settings(BLUR_ROOT).get_value("pipelines")
-            for name_ in current.keys():
-                if name_ != SIDEBAR_PIPELINE:
-                    pipelines.add_value(GLib.Variant.new_dict_entry(GLib.Variant("s", name_), current.lookup_value(name_, None)))
-            pipelines.add_value(GLib.Variant.new_dict_entry(
-                GLib.Variant("s", SIDEBAR_PIPELINE), GLib.Variant.parse(GLib.VariantType("a{sv}"), SIDEBAR_PIPELINE_VALUE, None, None)))
+                return write({"enable-all": False}, "重新開啟應用程式後生效", [store.gsettings_change(BLUR_APPS, "pipeline", None)])
             # 不透明度交給樣式，Blur my Shell 不再把整個視窗調淡
-            pipeline = GLib.Variant("s", SIDEBAR_PIPELINE).print_(False)
-            menus = [store.gsettings_change(schema, "blur-menus", "true") for schema in shell if schema.endswith(".popup")]
             write({"blur": True, "enable-all": True, "opacity": 255, "dynamic-opacity": False, "pipeline": SIDEBAR_PIPELINE},
-                  "重新開啟應用程式後生效", [store.gsettings_change(BLUR_ROOT, "pipelines", pipelines.end().print_(False))]
-                  + [store.gsettings_change(schema, "pipeline", pipeline) for schema in shell] + menus)
+                  "重新開啟應用程式後生效", [sidebar_pipeline_change()])
         w.connect("notify::active", toggled)
         g.add(w)
 
@@ -1922,8 +1937,13 @@ class Tuneup(Adw.Application):
             return p
         g.add(self.extension_switch(PANEL_UUID, title, name, "panel"))
         # 剛更新套件、還沒重新登入時，執行中的擴充功能和它的設定可能還是上一版的
-        if ext["state"] != EXT_STATE_ACTIVE or not store.has_key(PANEL, "box-spacing"):
+        if ext["state"] != EXT_STATE_ACTIVE or not store.has_key(PANEL, "glass-menus"):
             return p
+        glass = Adw.SwitchRow(title=_m("選單毛玻璃"), subtitle=_m("選單與彈出視窗和側邊欄同樣的毛玻璃"),
+                              active=store.settings(PANEL).get_boolean("glass-menus"))
+        glass.connect("notify::active", lambda r, _p: self.commit("tweak", glass_menu_changes(r.get_active()),
+                                                                   "已套用，可在「歷史」還原", page="panel"))
+        g.add(glass)
         # 在頂部列按住 Ctrl 拖曳會直接改寫順序；畫面跟著更新，之後的上移、下移才不會用舊的順序蓋回去
         settings = store.settings(PANEL)
         if self.panel_watch:

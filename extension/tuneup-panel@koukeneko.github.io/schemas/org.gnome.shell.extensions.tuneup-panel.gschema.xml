@@ -20,6 +20,11 @@
       <summary>Padding of single items, overriding their box</summary>
       <description>Only used in a box that has a padding of its own.</description>
     </key>
+    <key name="glass-menus" type="b">
+      <default>true</default>
+      <summary>Glass menus</summary>
+      <description>Give menus and popups the background of a see-through sidebar.</description>
+    </key>
     <key name="items" type="s">
       <default>'[]'</default>
       <summary>Items on the top bar</summary>

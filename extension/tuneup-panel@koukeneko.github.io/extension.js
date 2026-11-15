@@ -16,6 +16,7 @@ import {Extension, InjectionManager} from 'resource:///org/gnome/shell/extension
 
 const BOXES = [['left', '_leftBox'], ['center', '_centerBox'], ['right', '_rightBox']];
 const APP_INDICATOR_ROLE = 'appindicator-';
+const GLASS_MENUS_CLASS = 'tuneup-glass-menus';
 
 // Blur my Shell draws a menu's blur a frame or two after the menu first
 // shows, which a fade used to hide. Without one, the menu stays invisible for
@@ -83,6 +84,7 @@ export default class PanelManager extends Extension {
         for (const [, name] of BOXES)
             Main.panel[name].disconnectObject(this);
         this._settings.disconnectObject(this);
+        Main.uiGroup.remove_style_class_name(GLASS_MENUS_CLASS);
         for (const container of [...this._hidden.keys()])
             this._unhide(container);
         for (const button of [...this._styled.keys()])
@@ -101,6 +103,10 @@ export default class PanelManager extends Extension {
     }
 
     _sync() {
+        if (this._settings.get_boolean('glass-menus'))
+            Main.uiGroup.add_style_class_name(GLASS_MENUS_CLASS);
+        else
+            Main.uiGroup.remove_style_class_name(GLASS_MENUS_CLASS);
         this._reorder();
         const items = this._items();
         this._applyHidden(items);

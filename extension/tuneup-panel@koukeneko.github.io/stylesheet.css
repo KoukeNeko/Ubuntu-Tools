@@ -1,21 +1,23 @@
 /* Shell menus and popups wear the same glass as the sidebars Tuneup makes
    see-through: libadwaita's sidebar colour at 82%, over Blur my Shell's blur.
-   The repeated class only outranks Blur my Shell's own, lighter background. */
+   Blur my Shell marks the same layer with its style, so both classes sit on
+   one actor; the repeated class only outranks its own, lighter background.
+   The glass-menus setting adds and removes .tuneup-glass-menus. */
 
-.bms-popup-background-dark .popup-menu-content.popup-menu-content,
-.bms-popup-background-dark .popup-sub-menu.popup-sub-menu,
-.bms-popup-background-dark .bms-popup-blur-target.bms-popup-blur-target,
-.bms-popup-surface-dark .popup-menu-content.popup-menu-content,
-.bms-popup-surface-dark .popup-sub-menu.popup-sub-menu,
-.bms-popup-surface-dark .bms-popup-blur-target.bms-popup-blur-target {
+.tuneup-glass-menus.bms-popup-background-dark .popup-menu-content.popup-menu-content,
+.tuneup-glass-menus.bms-popup-background-dark .popup-sub-menu.popup-sub-menu,
+.tuneup-glass-menus.bms-popup-background-dark .bms-popup-blur-target.bms-popup-blur-target,
+.tuneup-glass-menus.bms-popup-surface-dark .popup-menu-content.popup-menu-content,
+.tuneup-glass-menus.bms-popup-surface-dark .popup-sub-menu.popup-sub-menu,
+.tuneup-glass-menus.bms-popup-surface-dark .bms-popup-blur-target.bms-popup-blur-target {
     background: rgba(46, 46, 50, 0.82) !important;
 }
 
-.bms-popup-background-light .popup-menu-content.popup-menu-content,
-.bms-popup-background-light .popup-sub-menu.popup-sub-menu,
-.bms-popup-background-light .bms-popup-blur-target.bms-popup-blur-target,
-.bms-popup-surface-light .popup-menu-content.popup-menu-content,
-.bms-popup-surface-light .popup-sub-menu.popup-sub-menu,
-.bms-popup-surface-light .bms-popup-blur-target.bms-popup-blur-target {
+.tuneup-glass-menus.bms-popup-background-light .popup-menu-content.popup-menu-content,
+.tuneup-glass-menus.bms-popup-background-light .popup-sub-menu.popup-sub-menu,
+.tuneup-glass-menus.bms-popup-background-light .bms-popup-blur-target.bms-popup-blur-target,
+.tuneup-glass-menus.bms-popup-surface-light .popup-menu-content.popup-menu-content,
+.tuneup-glass-menus.bms-popup-surface-light .popup-sub-menu.popup-sub-menu,
+.tuneup-glass-menus.bms-popup-surface-light .bms-popup-blur-target.bms-popup-blur-target {
     background: rgba(235, 235, 237, 0.82) !important;
 }

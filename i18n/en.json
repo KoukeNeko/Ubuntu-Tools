@@ -297,6 +297,8 @@
   "點擊模擬": "Click emulation",
   "取消": "Cancel",
   "已套用，可在「歷史」還原": "Applied — you can undo it in History",
+  "選單毛玻璃": "Glass menus",
+  "選單與彈出視窗和側邊欄同樣的毛玻璃": "Menus and popups get the same glass as sidebars",
   "沒有需要變更的項目": "Nothing to change",
   "無法套用：{error}": "Could not apply: {error}",
   "目前的狀態不符合任何設定檔": "The current state matches no profile",
